@@ -18,6 +18,10 @@ flutter run -d windows
 1. Start the server (see the `vianden-server` README): `go run ./cmd/server`
 2. Run the client: `flutter run -d windows`
 3. Enter `http://127.0.0.1:8080` and press **Connect**.
+4. **First account (owner):** choose **Register** and use the setup token (`vo_...`) printed in the server console as the invite code.
+5. As the owner, use **Create invite code** and give the code to a friend; they register with it.
+
+The app remembers the server and your login (the session token is stored encrypted with the OS secure storage; on Windows via DPAPI). **Log out** ends the session on the server too.
 
 Addresses without `http://` or `https://` use **https** by default.
 
@@ -38,8 +42,9 @@ If `very_good` is not found, add `%LOCALAPPDATA%\Pub\Cache\bin` to your PATH.
 | Folder | What it contains |
 |---|---|
 | `lib/app_config/` | **All** branding and theme values (app name, colors, default server). Widgets never hardcode these. |
-| `lib/core/` | Code shared by all features (server address parsing, API calls) |
-| `lib/features/` | One folder per screen/feature (e.g. `connect/`) |
+| `lib/core/` | Code shared by all features: API client, data models, session state (Riverpod), secure storage |
+| `lib/widgets/` | Small reusable widgets |
+| `lib/features/` | One folder per screen/feature: `connect/`, `auth/` (login + register), `home/` |
 | `test/` | Tests, mirroring `lib/` |
 
 ## License
