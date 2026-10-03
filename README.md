@@ -26,6 +26,14 @@ Addresses without `http://` or `https://` use **https** by default.
 flutter test
 ```
 
+## License check
+This project only allows permissive dependency licenses. Run this whenever dependencies change (`pubspec.yaml`):
+```powershell
+dart pub global activate very_good_cli   # once
+very_good packages check licenses --dependency-type=direct-main,transitive --allowed=MIT,BSD-2-Clause,BSD-3-Clause,Apache-2.0,ISC,Zlib,Unlicense,PostgreSQL
+```
+If `very_good` is not found, add `%LOCALAPPDATA%\Pub\Cache\bin` to your PATH.
+
 ## Project layout
 | Folder | What it contains |
 |---|---|
