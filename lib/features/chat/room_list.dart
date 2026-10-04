@@ -9,8 +9,10 @@ import '../../core/session_controller.dart';
 import 'chat_providers.dart';
 import '../../widgets/about.dart';
 import '../../widgets/release_badge.dart';
+import '../../widgets/user_avatar.dart';
 import 'dialogs.dart';
 import 'members_dialog.dart';
+import 'profile_dialog.dart';
 import 'realtime_controller.dart';
 import 'time_format.dart';
 
@@ -190,10 +192,16 @@ class _RoomTile extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = theme.extension<ChatColors>()!;
     final last = room.lastMessage;
+    // The open room never shows badges (what is on screen is being read).
+    final unread = !selected && room.unreadCount > 0;
+    // A message with only files has no text: say so instead of showing nothing.
+    final text = last == null || last.content.isNotEmpty
+        ? last?.content
+        : 'Sent a file';
     final preview = switch (last) {
       null => room.topic.isEmpty ? 'No messages yet' : room.topic,
-      MessagePreview(authorName: '') => last.content,
-      _ => '${last.authorName}: ${last.content}',
+      MessagePreview(authorName: '') => text!,
+      _ => '${last.authorName}: $text',
     };
 
     return Material(
@@ -223,7 +231,7 @@ class _RoomTile extends StatelessWidget {
                     child: Text(
                       room.name,
                       style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
+                        fontWeight: unread ? FontWeight.w900 : FontWeight.w700,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -268,12 +276,23 @@ class _RoomTile extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 3),
-              Text(
-                // Previews are one line: newlines in the message would break the layout.
-                preview.replaceAll('\n', ' '),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(color: colors.muted),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      // Previews are one line: newlines in the message would break the layout.
+                      preview.replaceAll('\n', ' '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: unread
+                            ? theme.colorScheme.onSurface
+                            : colors.muted,
+                      ),
+                    ),
+                  ),
+                  if (unread) _UnreadBadge(room: room),
+                ],
               ),
             ],
           ),
@@ -299,22 +318,7 @@ class _AccountBar extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(24, 12, 12, 12),
       child: Row(
         children: [
-          Container(
-            width: 34,
-            height: 34,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: colors.ownBubble,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              user.displayName.characters.first.toUpperCase(),
-              style: TextStyle(
-                color: colors.onOwnBubble,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
+          UserAvatar(name: user.displayName, avatar: user.avatar),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -349,6 +353,8 @@ class _AccountBar extends ConsumerWidget {
                     context,
                     () => controller.authorizedApi().createInvite(),
                   );
+                case 'profile':
+                  showProfileDialog(context);
                 case 'members':
                   showMembersDialog(context, user);
                 case 'server':
@@ -365,6 +371,7 @@ class _AccountBar extends ConsumerWidget {
                   value: 'invite',
                   child: Text('Invite a friend'),
                 ),
+              const PopupMenuItem(value: 'profile', child: Text('Profile')),
               const PopupMenuItem(value: 'members', child: Text('Members')),
               const PopupMenuItem(
                 value: 'server',
@@ -397,6 +404,41 @@ class _LoadError extends StatelessWidget {
           const SizedBox(height: AppSpacing.small),
           OutlinedButton(onPressed: onRetry, child: const Text('Try again')),
         ],
+      ),
+    );
+  }
+}
+
+/// "3" for unread messages, or "@2" (accent color) when some of them mention you.
+class _UnreadBadge extends StatelessWidget {
+  const _UnreadBadge({required this.room});
+
+  final Channel room;
+
+  static String _count(int n) => n >= 100 ? '99+' : '$n';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final mentions = room.mentionCount > 0;
+    return Container(
+      key: Key('unread-${room.id}'),
+      margin: const EdgeInsets.only(left: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+      decoration: BoxDecoration(
+        color: mentions
+            ? theme.colorScheme.primary
+            : theme.colorScheme.onSurface.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        mentions ? '@${_count(room.mentionCount)}' : _count(room.unreadCount),
+        style: theme.textTheme.labelSmall?.copyWith(
+          fontWeight: FontWeight.w800,
+          color: mentions
+              ? theme.colorScheme.onPrimary
+              : theme.colorScheme.onSurface,
+        ),
       ),
     );
   }

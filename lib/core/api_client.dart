@@ -175,6 +175,66 @@ class ApiClient {
   Future<void> deleteChannel(int id) => _send('DELETE', '/api/v1/channels/$id');
 
   /// Deletes someone's message (moderators and up; the server checks).
+  /// Uploads a file (raw bytes). Send its id with a message afterwards.
+  Future<Attachment> uploadAttachment(String filename, List<int> bytes) async {
+    final json = await _send(
+      'POST',
+      '/api/v1/attachments',
+      query: {'filename': filename},
+      bytes: bytes,
+      timeout: const Duration(minutes: 5), // same as the server allows
+    );
+    return _parse(() {
+      if (json case {'attachment': Object a}) return Attachment.fromJson(a);
+      throw const FormatException('unexpected attachment response');
+    });
+  }
+
+  /// Downloads a file's bytes. Goes through our own HTTP client, so it uses the same
+  /// login and trusted certificates as everything else.
+  Future<List<int>> downloadAttachment(int id) async {
+    final response = await _request(
+      'GET',
+      '/api/v1/attachments/$id',
+      timeout: const Duration(minutes: 5),
+    );
+    return response.bodyBytes;
+  }
+
+  /// Changes your own display name.
+  Future<User> updateProfile(String displayName) async => _user(
+    await _send('PATCH', '/api/v1/me', body: {'display_name': displayName}),
+  );
+
+  /// Sets your avatar from an image file (the server crops and resizes it).
+  Future<User> setAvatar(List<int> imageBytes) async => _user(
+    await _send(
+      'PUT',
+      '/api/v1/me/avatar',
+      bytes: imageBytes,
+      timeout: const Duration(minutes: 2),
+    ),
+  );
+
+  Future<User> removeAvatar() async =>
+      _user(await _send('DELETE', '/api/v1/me/avatar'));
+
+  /// Downloads an avatar by the path from a user or member object.
+  Future<List<int>> downloadAvatar(String path) async =>
+      (await _request('GET', path)).bodyBytes;
+
+  User _user(Object? json) => _parse(() {
+    if (json case {'user': Object u}) return User.fromJson(u);
+    throw const FormatException('unexpected user response');
+  });
+
+  /// Tells the server we have read the room up to [messageId] (it never moves back).
+  Future<void> markRead(int channelId, int messageId) => _send(
+    'PUT',
+    '/api/v1/channels/$channelId/read',
+    body: {'message_id': messageId},
+  );
+
   Future<void> deleteMessage(int channelId, int messageId) =>
       _send('DELETE', '/api/v1/channels/$channelId/messages/$messageId');
 
@@ -237,11 +297,16 @@ class ApiClient {
     int channelId,
     String content, {
     int? replyTo,
+    List<int> attachments = const [],
   }) async {
     final json = await _send(
       'POST',
       '/api/v1/channels/$channelId/messages',
-      body: {'content': content, 'reply_to': ?replyTo},
+      body: {
+        'content': content,
+        'reply_to': ?replyTo,
+        if (attachments.isNotEmpty) 'attachments': attachments,
+      },
     );
     return _message(json);
   }
@@ -276,6 +341,36 @@ class ApiClient {
     String path, {
     Object? body,
     Map<String, String>? query,
+    List<int>? bytes,
+    Duration timeout = _timeout,
+  }) async {
+    final response = await _request(
+      method,
+      path,
+      body: body,
+      query: query,
+      bytes: bytes,
+      timeout: timeout,
+    );
+    if (response.statusCode == 204 || response.bodyBytes.isEmpty) {
+      return null;
+    }
+    try {
+      return jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      throw _badResponse(response.statusCode);
+    }
+  }
+
+  /// Sends a request (a JSON [body], or raw [bytes] for uploads) and returns the
+  /// response; throws for errors.
+  Future<http.Response> _request(
+    String method,
+    String path, {
+    Object? body,
+    Map<String, String>? query,
+    List<int>? bytes,
+    Duration timeout = _timeout,
   }) async {
     final url = server.replace(path: path, queryParameters: query);
     final request = http.Request(method, url);
@@ -286,12 +381,15 @@ class ApiClient {
     if (body != null) {
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode(body);
+    } else if (bytes != null) {
+      request.headers['Content-Type'] = 'application/octet-stream';
+      request.bodyBytes = bytes;
     }
 
     final http.Response response;
     try {
-      final streamed = await httpClient.send(request).timeout(_timeout);
-      response = await http.Response.fromStream(streamed).timeout(_timeout);
+      final streamed = await httpClient.send(request).timeout(timeout);
+      response = await http.Response.fromStream(streamed).timeout(timeout);
     } on TimeoutException {
       throw const NetworkException('The server did not answer in time.');
     } on Exception {
@@ -303,14 +401,7 @@ class ApiClient {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ApiException.fromResponse(response);
     }
-    if (response.statusCode == 204 || response.bodyBytes.isEmpty) {
-      return null;
-    }
-    try {
-      return jsonDecode(utf8.decode(response.bodyBytes));
-    } on FormatException {
-      throw _badResponse(response.statusCode);
-    }
+    return response;
   }
 
   T _parse<T>(T Function() parse) {

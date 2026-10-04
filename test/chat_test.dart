@@ -61,7 +61,12 @@ void main() {
     testWidgets('own messages and others are shown, with names and times', (
       tester,
     ) async {
-      final at = DateTime.now().subtract(const Duration(minutes: 30));
+      // 30 minutes ago, but never before midnight: the test expects "Today"
+      // (it failed when run just after midnight).
+      final now = DateTime.now();
+      final midnight = DateTime(now.year, now.month, now.day);
+      var at = now.subtract(const Duration(minutes: 30));
+      if (at.isBefore(midnight)) at = midnight.add(const Duration(seconds: 1));
       server.post(1, 'friend', 'hello osama', at: at);
       server.post(
         1,

@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app_config/app_theme.dart';
 import '../../core/api_client.dart';
+import '../../core/models.dart';
+import '../../core/permissions.dart';
+import '../../core/session_controller.dart';
+import '../../widgets/user_avatar.dart';
 import 'chat_providers.dart';
 import 'realtime_controller.dart';
 
@@ -27,7 +32,24 @@ class _ComposerState extends ConsumerState<Composer> {
   /// What was typed before an edit started; restored when the edit ends.
   String _draft = '';
 
+  /// @ autocomplete: matching people (or "everyone") for the "@..." before the cursor.
+  List<_Suggestion> _suggestions = const [];
+  int _selected = 0;
+
+  /// Files picked for the next message (uploading, or uploaded and waiting to be sent).
+  final _uploads = <_Upload>[];
+
+  bool get _uploading => _uploads.any((u) => u.attachment == null);
+
+  @override
+  void initState() {
+    super.initState();
+    // Also fires when only the cursor moves, so the list follows the cursor.
+    _text.addListener(_updateSuggestions);
+  }
+
   static const maxLength = 4000; // same limit as the server
+  static const maxFileBytes = 25 * 1024 * 1024; // same limit as the server
 
   @override
   void dispose() {
@@ -41,19 +63,26 @@ class _ComposerState extends ConsumerState<Composer> {
 
   Future<void> _send() async {
     final content = _text.text;
-    if (content.trim().isEmpty || _sending) return;
-    final messages = ref.read(messagesProvider(widget.channelId).notifier);
     final mode = ref.read(composerModeProvider(widget.channelId));
+    final files = mode is Editing
+        ? const <int>[]
+        : [for (final u in _uploads) u.attachment!.id];
+    if ((content.trim().isEmpty && files.isEmpty) || _sending || _uploading) {
+      return;
+    }
+    final messages = ref.read(messagesProvider(widget.channelId).notifier);
 
     setState(() => _sending = true);
     try {
       switch (mode) {
         case Writing():
-          await messages.send(content);
+          await messages.send(content, attachments: files);
           _text.clear(); // only cleared when the server accepted it
+          setState(_uploads.clear);
         case ReplyingTo(:final message):
-          await messages.send(content, replyTo: message.id);
+          await messages.send(content, replyTo: message.id, attachments: files);
           _text.clear();
+          setState(_uploads.clear);
           _mode.cancel();
         case Editing(:final message):
           if (content != message.content) {
@@ -71,15 +100,115 @@ class _ComposerState extends ConsumerState<Composer> {
     _focus.requestFocus();
   }
 
+  /// Lets the user pick files, and uploads each one right away.
+  Future<void> _pickFiles() async {
+    final picked = await openFiles();
+    for (final file in picked) {
+      if (await file.length() > maxFileBytes) {
+        _showError('"${file.name}" is larger than 25 MB.');
+        continue;
+      }
+      final upload = _Upload(file.name);
+      setState(() => _uploads.add(upload));
+      try {
+        final bytes = await file.readAsBytes();
+        final api = ref.read(sessionProvider.notifier).authorizedApi();
+        final a = await api.uploadAttachment(file.name, bytes);
+        if (mounted) setState(() => upload.attachment = a);
+      } on Exception catch (e) {
+        if (!mounted) return;
+        setState(() => _uploads.remove(upload));
+        _showError(switch (e) {
+          ApiException(:final message) ||
+          NetworkException(:final message) => message,
+          _ => 'Could not read "${file.name}".',
+        });
+      }
+    }
+  }
+
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// "@" + letters right before the cursor (not inside an e-mail address).
+  static final _typingMention = RegExp(
+    r'(?<![\p{L}\p{N}_.@-])@([A-Za-z0-9_.-]*)$',
+    unicode: true,
+  );
+
+  void _updateSuggestions() {
+    final cursor = _text.selection.baseOffset;
+    final match = cursor < 0
+        ? null
+        : _typingMention.firstMatch(_text.text.substring(0, cursor));
+    var next = const <_Suggestion>[];
+    if (match != null) {
+      final query = match.group(1)!.toLowerCase();
+      final session = ref.read(sessionProvider).value;
+      final me = session is LoggedIn ? session.user : null;
+      final members = ref.read(membersProvider).value ?? const <Member>[];
+      next = [
+        if (me != null &&
+            me.can(Permission.mentionEveryone) &&
+            'everyone'.startsWith(query))
+          const _Suggestion('everyone', 'Everyone in this room'),
+        for (final m in members)
+          if (m.id != me?.id &&
+              (m.username.startsWith(query) ||
+                  m.displayName.toLowerCase().startsWith(query)))
+            _Suggestion(m.username, m.displayName, m.avatar),
+      ].take(6).toList();
+    }
+    if (next.length != _suggestions.length ||
+        !next.indexed.every(
+          (e) => e.$2.username == _suggestions[e.$1].username,
+        )) {
+      setState(() {
+        _suggestions = next;
+        _selected = 0;
+      });
+    }
+  }
+
+  /// Replaces the "@..." before the cursor with "@username ".
+  void _pick(_Suggestion s) {
+    final cursor = _text.selection.baseOffset;
+    final before = _text.text.substring(0, cursor);
+    final start = before.lastIndexOf('@');
+    final inserted = '@${s.username} ';
+    _text.value = TextEditingValue(
+      text: _text.text.replaceRange(start, cursor, inserted),
+      selection: TextSelection.collapsed(offset: start + inserted.length),
+    );
+    _focus.requestFocus();
+  }
+
   /// Enter (without Shift) sends instead of adding a new line.
   /// Esc cancels replying or editing.
+  /// While suggestions show: Up/Down choose, Tab/Enter insert, Esc closes them.
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (_suggestions.isNotEmpty && event is KeyDownEvent) {
+      switch (event.logicalKey) {
+        case LogicalKeyboardKey.arrowDown:
+          setState(() => _selected = (_selected + 1) % _suggestions.length);
+          return KeyEventResult.handled;
+        case LogicalKeyboardKey.arrowUp:
+          setState(
+            () => _selected =
+                (_selected - 1 + _suggestions.length) % _suggestions.length,
+          );
+          return KeyEventResult.handled;
+        case LogicalKeyboardKey.tab || LogicalKeyboardKey.enter:
+          _pick(_suggestions[_selected]);
+          return KeyEventResult.handled;
+        case LogicalKeyboardKey.escape:
+          setState(() => _suggestions = const []);
+          return KeyEventResult.handled;
+      }
+    }
     if (event is KeyDownEvent &&
         event.logicalKey == LogicalKeyboardKey.escape &&
         ref.read(composerModeProvider(widget.channelId)) is! Writing) {
@@ -99,6 +228,8 @@ class _ComposerState extends ConsumerState<Composer> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final mode = ref.watch(composerModeProvider(widget.channelId));
+    // The member list feeds @ autocomplete (loaded once while the room is open).
+    ref.watch(membersProvider);
 
     // React to mode changes (from the message actions): fill in the text to edit,
     // give the draft back afterwards, and put the cursor in the box.
@@ -118,6 +249,12 @@ class _ComposerState extends ConsumerState<Composer> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (_suggestions.isNotEmpty)
+            _SuggestionList(
+              suggestions: _suggestions,
+              selected: _selected,
+              onPick: _pick,
+            ),
           if (mode case ReplyingTo(:final message))
             _ModeBar(
               key: const Key('reply-bar'),
@@ -130,6 +267,33 @@ class _ComposerState extends ConsumerState<Composer> {
               key: const Key('edit-bar'),
               text: 'Editing your message',
               onCancel: _mode.cancel,
+            ),
+          if (_uploads.isNotEmpty && mode is! Editing)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final u in _uploads)
+                    InputChip(
+                      key: Key('upload-${u.name}'),
+                      avatar: u.attachment == null
+                          ? const SizedBox.square(
+                              dimension: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Icon(
+                              u.attachment!.isImage
+                                  ? Icons.image_outlined
+                                  : Icons.insert_drive_file_outlined,
+                              size: 16,
+                            ),
+                      label: Text(u.name, overflow: TextOverflow.ellipsis),
+                      onDeleted: () => setState(() => _uploads.remove(u)),
+                    ),
+                ],
+              ),
             ),
           DecoratedBox(
             // Design C2: a single strong underline instead of a big rounded box.
@@ -144,6 +308,16 @@ class _ComposerState extends ConsumerState<Composer> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
+                if (mode is! Editing)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: IconButton(
+                      key: const Key('attach'),
+                      tooltip: 'Attach files (max 25 MB each)',
+                      icon: const Icon(Icons.attach_file),
+                      onPressed: _sending ? null : _pickFiles,
+                    ),
+                  ),
                 Expanded(
                   child: Focus(
                     onKeyEvent: _onKey,
@@ -191,7 +365,7 @@ class _ComposerState extends ConsumerState<Composer> {
                   padding: const EdgeInsets.only(bottom: 6),
                   child: FilledButton(
                     key: const Key('send'),
-                    onPressed: _sending ? null : _send,
+                    onPressed: _sending || _uploading ? null : _send,
                     child: Text(mode is Editing ? 'Save' : 'Send'),
                   ),
                 ),
@@ -251,4 +425,62 @@ class _ModeBar extends StatelessWidget {
       ],
     );
   }
+}
+
+/// One autocomplete entry: what gets inserted ([username]) and what is shown.
+class _Suggestion {
+  const _Suggestion(this.username, this.label, [this.avatar]);
+  final String username;
+  final String label;
+  final String? avatar;
+}
+
+/// The list of people above the input while typing "@...".
+class _SuggestionList extends StatelessWidget {
+  const _SuggestionList({
+    required this.suggestions,
+    required this.selected,
+    required this.onPick,
+  });
+
+  final List<_Suggestion> suggestions;
+  final int selected;
+  final ValueChanged<_Suggestion> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.extension<ChatColors>()!.muted;
+    return Card(
+      key: const Key('mention-suggestions'),
+      margin: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (i, s) in suggestions.indexed)
+            ListTile(
+              key: Key('mention-${s.username}'),
+              dense: true,
+              selected: i == selected,
+              leading: s.username == 'everyone'
+                  ? const Icon(Icons.campaign_outlined, size: 22)
+                  : UserAvatar(name: s.label, avatar: s.avatar, size: 22),
+              title: Text(s.label),
+              trailing: Text(
+                '@${s.username}',
+                style: theme.textTheme.bodySmall?.copyWith(color: muted),
+              ),
+              onTap: () => onPick(s),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A file picked in the composer: uploading ([attachment] is null) or uploaded.
+class _Upload {
+  _Upload(this.name);
+  final String name;
+  Attachment? attachment;
 }

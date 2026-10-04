@@ -6,8 +6,10 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/permissions.dart';
 import 'chat_providers.dart';
+import 'attachment_view.dart';
 import 'dialogs.dart';
 import 'time_format.dart';
+import '../../widgets/user_avatar.dart';
 
 /// The scrolling message history of one room. Newest at the bottom; scrolling up loads older pages.
 class MessageView extends ConsumerStatefulWidget {
@@ -40,6 +42,20 @@ class _MessageViewState extends ConsumerState<MessageView> {
   /// animation when jumping to the same message twice.
   int? _highlightId;
   int _highlightCount = 0;
+
+  /// The read marker when the room was opened: messages after it get a "New" divider.
+  /// Kept while the room stays open, even though the marker itself moves on.
+  late final int _readMarkerAtOpen =
+      ref
+          .read(channelsProvider)
+          .value
+          ?.where((r) => r.id == widget.channelId)
+          .firstOrNull
+          ?.lastReadId ??
+      0;
+
+  /// The newest message we already reported as read.
+  int _lastMarked = 0;
 
   @override
   void initState() {
@@ -150,6 +166,8 @@ class _MessageViewState extends ConsumerState<MessageView> {
     final messages = s.messages;
     final me = widget.me;
     final mode = ref.read(composerModeProvider(widget.channelId).notifier);
+    // Names and avatars by user id, so a rename shows on old messages too.
+    final people = ref.watch(membersByIdProvider);
 
     // Moderators can delete messages of members BELOW their role. The member list
     // tells us each author's role (only loaded for users who can delete at all).
@@ -179,6 +197,24 @@ class _MessageViewState extends ConsumerState<MessageView> {
         if (mounted && _scroll.hasClients) _onScroll();
       });
     }
+
+    // What is on screen counts as read: report the newest message (once per new one).
+    final newest = messages.lastOrNull?.id ?? 0;
+    if (newest > _lastMarked) {
+      _lastMarked = newest;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ref
+              .read(channelsProvider.notifier)
+              .markRead(widget.channelId, newest);
+        }
+      });
+    }
+    // The first message that was new when the room was opened (not our own).
+    final firstNewId = messages
+        .where((m) => m.id > _readMarkerAtOpen && m.author?.id != me.id)
+        .firstOrNull
+        ?.id;
 
     if (messages.isEmpty) {
       return Center(
@@ -241,10 +277,18 @@ class _MessageViewState extends ConsumerState<MessageView> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   if (newDay) _DaySeparator(m.createdAt),
+                  if (m.id == firstNewId && _readMarkerAtOpen > 0)
+                    const _NewDivider(),
                   _Bubble(
                     message: m,
                     mine: mine,
-                    showHeader: !grouped,
+                    authorName:
+                        people[m.author?.id]?.displayName ??
+                        m.author?.displayName ??
+                        'Deleted user',
+                    quoteName: people[m.replyTo?.author?.id]?.displayName,
+                    mentionsMe: !mine && m.mentionsUser(me.id),
+                    showHeader: !grouped || m.id == firstNewId,
                     maxWidth: maxBubble,
                     highlight: m.id == _highlightId ? _highlightCount : null,
                     onQuoteTap: m.replyTo == null
@@ -305,6 +349,9 @@ class _Bubble extends StatefulWidget {
   const _Bubble({
     required this.message,
     required this.mine,
+    required this.authorName,
+    this.quoteName,
+    this.mentionsMe = false,
     required this.showHeader,
     required this.maxWidth,
     this.highlight,
@@ -316,6 +363,13 @@ class _Bubble extends StatefulWidget {
 
   final Message message;
   final bool mine;
+
+  /// Current display names (from the member list, so renames show at once).
+  final String authorName;
+  final String? quoteName;
+
+  /// It pings the logged-in user: shown with an accent border.
+  final bool mentionsMe;
   final bool showHeader;
   final double maxWidth;
 
@@ -368,7 +422,14 @@ class _BubbleState extends State<_Bubble> {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: mine ? colors.ownBubble : colors.otherBubble,
-              border: mine ? null : Border.all(color: colors.otherBubbleBorder),
+              border: mine
+                  ? null
+                  : Border.all(
+                      color: widget.mentionsMe
+                          ? theme.colorScheme.primary
+                          : colors.otherBubbleBorder,
+                      width: widget.mentionsMe ? 2 : 1,
+                    ),
               // The corner nearest the sender stays sharp.
               borderRadius: BorderRadius.only(
                 topLeft: Radius.circular(mine ? 12 : 4),
@@ -380,8 +441,14 @@ class _BubbleState extends State<_Bubble> {
             // Plain text only: the content is displayed exactly as typed, never as markup or links.
             child: SelectableText.rich(
               TextSpan(
-                text: message.content,
                 children: [
+                  ...mentionSpans(
+                    message,
+                    TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: mine ? textColor : theme.colorScheme.primary,
+                    ),
+                  ),
                   if (message.editedAt != null)
                     TextSpan(
                       text: '  (edited)',
@@ -400,6 +467,23 @@ class _BubbleState extends State<_Bubble> {
             ),
           );
 
+    // The text bubble (if there is text) and the files under it.
+    final messageBody = Column(
+      crossAxisAlignment: mine
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      children: [
+        if (message.deleted || message.content.isNotEmpty) bubble,
+        for (final a in message.attachments)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: a.isImage
+                ? ImageAttachment(attachment: a, maxWidth: widget.maxWidth)
+                : FileAttachment(attachment: a),
+          ),
+      ],
+    );
+
     final actions = [
       if (widget.onReply case final onReply?)
         _action('reply', Icons.reply, 'Reply', onReply),
@@ -409,7 +493,7 @@ class _BubbleState extends State<_Bubble> {
         _action('delete', Icons.delete_outline, 'Delete', onDelete),
     ];
 
-    Widget body = bubble;
+    Widget body = messageBody;
     if (actions.isNotEmpty) {
       // Faded out (not removed) when not hovered, so nothing jumps around.
       final bar = AnimatedOpacity(
@@ -424,8 +508,8 @@ class _BubbleState extends State<_Bubble> {
           mainAxisSize: MainAxisSize.min,
           // Actions on the inner side: right of others' bubbles, left of mine.
           children: mine
-              ? [bar, Flexible(child: bubble)]
-              : [Flexible(child: bubble), bar],
+              ? [bar, Flexible(child: messageBody)]
+              : [Flexible(child: messageBody), bar],
         ),
       );
     }
@@ -440,6 +524,10 @@ class _BubbleState extends State<_Bubble> {
           if (message.replyTo case final quote?)
             _Quote(
               quote: quote,
+              authorName:
+                  widget.quoteName ??
+                  quote.author?.displayName ??
+                  'Deleted user',
               mine: mine,
               maxWidth: widget.maxWidth,
               onTap: widget.onQuoteTap,
@@ -447,22 +535,34 @@ class _BubbleState extends State<_Bubble> {
           if (widget.showHeader)
             Padding(
               padding: const EdgeInsets.only(bottom: 5),
-              child: Text.rich(
-                TextSpan(
-                  children: [
-                    if (!mine)
-                      TextSpan(
-                        text:
-                            '${message.author?.displayName ?? 'Deleted user'}  ',
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    TextSpan(
-                      text: time,
-                      style: TextStyle(color: colors.muted),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!mine) ...[
+                    MemberAvatar(
+                      userId: message.author?.id,
+                      fallbackName: widget.authorName,
+                      size: 22,
                     ),
+                    const SizedBox(width: 8),
                   ],
-                ),
-                style: theme.textTheme.bodySmall,
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        if (!mine)
+                          TextSpan(
+                            text: '${widget.authorName}  ',
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                        TextSpan(
+                          text: time,
+                          style: TextStyle(color: colors.muted),
+                        ),
+                      ],
+                    ),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
               ),
             ),
           body,
@@ -506,12 +606,14 @@ class _BubbleState extends State<_Bubble> {
 class _Quote extends StatelessWidget {
   const _Quote({
     required this.quote,
+    required this.authorName,
     required this.mine,
     required this.maxWidth,
     this.onTap,
   });
 
   final ReplyQuote quote;
+  final String authorName;
   final bool mine;
   final double maxWidth;
   final VoidCallback? onTap;
@@ -541,6 +643,15 @@ class _Quote extends StatelessWidget {
       ),
     );
 
+    // A tiny avatar of the original author, like the name next to it.
+    final face = quote.deleted
+        ? const SizedBox.shrink()
+        : MemberAvatar(
+            userId: quote.author?.id,
+            fallbackName: authorName,
+            size: 16,
+          );
+
     final text = Flexible(
       child: Text.rich(
         quote.deleted
@@ -551,7 +662,7 @@ class _Quote extends StatelessWidget {
             : TextSpan(
                 children: [
                   TextSpan(
-                    text: '${quote.author?.displayName ?? 'Deleted user'}  ',
+                    text: '$authorName  ',
                     style: TextStyle(
                       fontWeight: FontWeight.w700,
                       color: theme.colorScheme.primary,
@@ -580,13 +691,21 @@ class _Quote extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: mine
-                  ? [text, const SizedBox(width: 6), elbow]
+                  ? [
+                      face,
+                      const SizedBox(width: 5),
+                      text,
+                      const SizedBox(width: 6),
+                      elbow,
+                    ]
                   : [
                       Padding(
                         padding: const EdgeInsets.only(left: 6),
                         child: elbow,
                       ),
                       const SizedBox(width: 6),
+                      face,
+                      const SizedBox(width: 5),
                       text,
                     ],
             ),
@@ -595,4 +714,69 @@ class _Quote extends StatelessWidget {
       ),
     );
   }
+}
+
+/// "──── New ────": where the messages start that were unread when the room was opened.
+class _NewDivider extends StatelessWidget {
+  const _NewDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    final line = Expanded(child: Divider(color: color));
+    return Padding(
+      key: const Key('new-divider'),
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        children: [
+          line,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Text(
+              'New',
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: color, fontWeight: FontWeight.w800),
+            ),
+          ),
+          line,
+        ],
+      ),
+    );
+  }
+}
+
+/// Same rule as the server: "@" not preceded by a letter, digit, "_", ".", "-", or "@".
+final _mentionPattern = RegExp(
+  r'(?<![\p{L}\p{N}_.@-])@([A-Za-z0-9][A-Za-z0-9_.-]*)',
+  unicode: true,
+);
+
+/// The message text with real mentions in [style]. Only names the SERVER confirmed
+/// (in `mentions`, or @everyone when it counted) are styled: typing "@admin" does not
+/// make text look like a ping that never happened.
+List<TextSpan> mentionSpans(Message m, TextStyle style) {
+  final names = {for (final a in m.mentions) a.username};
+  bool real(String name) {
+    final n = name.toLowerCase();
+    final trimmed = n.replaceFirst(RegExp(r'[._-]+$'), '');
+    if (m.mentionsEveryone && (n == 'everyone' || trimmed == 'everyone')) {
+      return true;
+    }
+    return names.contains(n) || names.contains(trimmed);
+  }
+
+  final spans = <TextSpan>[];
+  var last = 0;
+  for (final match in _mentionPattern.allMatches(m.content)) {
+    if (!real(match.group(1)!)) continue;
+    if (match.start > last) {
+      spans.add(TextSpan(text: m.content.substring(last, match.start)));
+    }
+    spans.add(TextSpan(text: match.group(0), style: style));
+    last = match.end;
+  }
+  if (last < m.content.length) {
+    spans.add(TextSpan(text: m.content.substring(last)));
+  }
+  return spans;
 }

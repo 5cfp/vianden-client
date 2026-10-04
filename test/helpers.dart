@@ -1,3 +1,4 @@
+import 'dart:math' show max;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -49,6 +50,7 @@ const fakeRolePermissions = <Role, List<String>>{
     Permission.deleteMessages,
     Permission.kickMembers,
     Permission.banMembers,
+    Permission.mentionEveryone,
   ],
   Role.admin: [
     Permission.manageChannels,
@@ -57,8 +59,13 @@ const fakeRolePermissions = <Role, List<String>>{
     Permission.deleteMessages,
     Permission.kickMembers,
     Permission.banMembers,
+    Permission.mentionEveryone,
   ],
-  Role.moderator: [Permission.deleteMessages, Permission.kickMembers],
+  Role.moderator: [
+    Permission.deleteMessages,
+    Permission.kickMembers,
+    Permission.mentionEveryone,
+  ],
   Role.member: [],
 };
 
@@ -72,8 +79,11 @@ class FakeUser {
   });
   final int id;
   final String username;
-  final String displayName;
+  String displayName;
   final String password;
+
+  /// Avatar URL path, or null (the fake server keeps the bytes in [FakeServer.avatars]).
+  String? avatar;
   Role role;
   bool banned = false;
   String banReason = '';
@@ -83,19 +93,21 @@ class FakeUser {
   /// perm.CanActOn: the permission AND a higher role than the target.
   bool canActOn(String p, Role target) => can(p) && role.above(target);
 
-  Map<String, Object> toJson() => {
+  Map<String, Object?> toJson() => {
     'id': id,
     'username': username,
     'display_name': displayName,
     'role': role.wire,
     'permissions': fakeRolePermissions[role]!,
+    'avatar': avatar,
   };
 
-  Map<String, Object> memberJson(FakeUser viewer) => {
+  Map<String, Object?> memberJson(FakeUser viewer) => {
     'id': id,
     'username': username,
     'display_name': displayName,
     'role': role.wire,
+    'avatar': avatar,
     if (viewer.can(Permission.banMembers)) ...{
       'banned': banned,
       'ban_reason': banReason,
@@ -137,6 +149,11 @@ class FakeMessage {
   bool deleted = false;
   DateTime? editedAt;
 
+  /// Who it pings (set by the fake server when posting, like the real one).
+  List<FakeUser> mentions = [];
+  bool mentionsEveryone = false;
+  List<FakeUpload> attachments = [];
+
   /// The message this one replies to (the quote is built from its CURRENT state,
   /// like the real server's query does).
   FakeMessage? replyTo;
@@ -159,6 +176,12 @@ class FakeMessage {
     'deleted': deleted,
     'created_at': createdAt.toUtc().toIso8601String(),
     'edited_at': editedAt?.toUtc().toIso8601String(),
+    'mentions': [for (final u in mentions) _author(u)],
+    'mentions_everyone': mentionsEveryone,
+    'attachments': [
+      if (!deleted)
+        for (final a in attachments) a.toJson(),
+    ],
     'reply_to': switch (replyTo) {
       null => null,
       final r => {
@@ -297,8 +320,60 @@ class FakeServer {
       content,
       at ?? DateTime.now(),
     )..replyTo = replyTo;
+    _setMentions(m);
     messages.add(m);
     return m;
+  }
+
+  /// The server's mention rules: @username of people who can see the room (not the
+  /// author), the author of the replied-to message, and @everyone for moderators+.
+  void _setMentions(FakeMessage m) {
+    final ch = channels.firstWhere((c) => c.id == m.channelId);
+    final names = RegExp(
+      r'(?<![\p{L}\p{N}_.@-])@([A-Za-z0-9][A-Za-z0-9_.-]*)',
+      unicode: true,
+    ).allMatches(m.content).map((x) => x.group(1)!.toLowerCase()).toSet();
+    m.mentionsEveryone =
+        names.contains('everyone') && m.author!.can(Permission.mentionEveryone);
+    m.mentions = [
+      for (final u in users)
+        if (u.id != m.author?.id &&
+            ch.canView(u) &&
+            (names.contains(u.username) || m.replyTo?.author?.id == u.id))
+          u,
+    ];
+  }
+
+  /// Last read message per (user id, channel id).
+  final readStates = <(int, int), int>{};
+
+  /// Avatar pictures by key.
+  final avatars = <String, List<int>>{};
+  var _nextAvatar = 1;
+
+  /// Uploaded files by id.
+  final uploads = <int, FakeUpload>{};
+  var _nextUploadId = 1;
+
+  Map<String, int> _unread(FakeUser u, FakeChannel c) {
+    final last = readStates[(u.id, c.id)] ?? 0;
+    final fresh = messages.where(
+      (m) =>
+          m.channelId == c.id &&
+          m.id > last &&
+          !m.deleted &&
+          m.author?.id != u.id,
+    );
+    return {
+      'last_read_id': last,
+      'unread_count': fresh.length.clamp(0, 100),
+      'mention_count': fresh
+          .where(
+            (m) => m.mentionsEveryone || m.mentions.any((x) => x.id == u.id),
+          )
+          .length
+          .clamp(0, 100),
+    };
   }
 
   /// What the app's RealtimeConnector calls: opens a fake live connection.
@@ -366,7 +441,9 @@ class FakeServer {
     requests.add(r);
     if (down) throw const SocketException('connection refused');
 
-    final body = r.body.isEmpty
+    // Uploads send raw bytes; everything else sends JSON.
+    final isJson = r.headers['Content-Type']?.startsWith('application/json');
+    final body = r.bodyBytes.isEmpty || isJson != true
         ? <String, dynamic>{}
         : jsonDecode(r.body) as Map<String, dynamic>;
     final bearer = r.headers['Authorization'] ?? '';
@@ -461,6 +538,42 @@ class FakeServer {
     final isMessages = channelPath?.group(2) != null;
     final messageId = int.tryParse(channelPath?.group(3) ?? '');
 
+    // ---- attachments ----
+    if (path == '/api/v1/attachments' && r.method == 'POST') {
+      final name = r.url.queryParameters['filename'] ?? '';
+      if (name.trim().isEmpty) {
+        return _error(400, 'invalid_filename', 'a file name is required');
+      }
+      if (r.bodyBytes.length > 25 * 1024 * 1024) {
+        return _error(413, 'file_too_large', 'files can be at most 25 MB');
+      }
+      final u = FakeUpload(_nextUploadId++, name, r.bodyBytes, me);
+      uploads[u.id] = u;
+      return _json(201, {'attachment': u.toJson()});
+    }
+    if (RegExp(r'^/api/v1/attachments/(\d+)$').firstMatch(path) case final m?
+        when r.method == 'GET') {
+      final u = uploads[int.parse(m.group(1)!)];
+      final msg = messages.where((x) => x.attachments.contains(u)).firstOrNull;
+      final allowed =
+          u != null &&
+          (msg == null
+              ? u.uploader.id == me.id
+              : !msg.deleted &&
+                    channels.any(
+                      (c) => c.id == msg.channelId && c.canView(me),
+                    ));
+      if (!allowed) return _error(404, 'not_found', 'attachment not found');
+      return http.Response.bytes(u.bytes, 200);
+    }
+
+    if (RegExp(r'^/api/v1/avatars/([0-9a-f]{64})$').firstMatch(path)
+        case final m? when r.method == 'GET') {
+      final bytes = avatars[m.group(1)];
+      if (bytes == null) return _error(404, 'not_found', 'avatar not found');
+      return http.Response.bytes(bytes, 200);
+    }
+
     // ---- members ----
     if (path == '/api/v1/users' && r.method == 'GET') {
       return _json(200, {
@@ -516,6 +629,53 @@ class FakeServer {
     }
 
     switch ((r.method, path)) {
+      case ('PATCH', '/api/v1/me'):
+        final name = (body['display_name'] as String).trim();
+        if (name.isEmpty || name.length > 32) {
+          return _error(
+            400,
+            'invalid_display_name',
+            'display_name: must be 1-32 characters',
+          );
+        }
+        me.displayName = name;
+        pushAll(
+          'member.updated',
+          me.memberJson(me)
+            ..remove('banned')
+            ..remove('ban_reason'),
+        );
+        return _json(200, {'user': me.toJson()});
+
+      case ('PUT', '/api/v1/me/avatar'):
+        if (!FakeUpload(0, '', r.bodyBytes, me).isPng) {
+          return _error(
+            400,
+            'invalid_avatar',
+            'avatar: must be a PNG, JPEG, GIF or WebP image',
+          );
+        }
+        final key = (_nextAvatar++).toRadixString(16).padLeft(64, '0');
+        avatars[key] = r.bodyBytes;
+        me.avatar = '/api/v1/avatars/$key';
+        pushAll(
+          'member.updated',
+          me.memberJson(me)
+            ..remove('banned')
+            ..remove('ban_reason'),
+        );
+        return _json(200, {'user': me.toJson()});
+
+      case ('DELETE', '/api/v1/me/avatar'):
+        me.avatar = null;
+        pushAll(
+          'member.updated',
+          me.memberJson(me)
+            ..remove('banned')
+            ..remove('ban_reason'),
+        );
+        return _json(200, {'user': me.toJson()});
+
       case ('GET', '/api/v1/me'):
         return _json(200, {'user': me.toJson()});
 
@@ -541,7 +701,7 @@ class FakeServer {
         return _json(200, {
           'channels': [
             for (final c in channels)
-              if (c.canView(me)) _channelJson(c, withPreview: true),
+              if (c.canView(me)) _channelJson(c, withPreview: true, viewer: me),
           ],
         });
 
@@ -612,6 +772,26 @@ class FakeServer {
       }
     }
 
+    // PUT /channels/{id}/read: the marker only moves forward, never past the newest.
+    if (RegExp(r'^/api/v1/channels/(\d+)/read$').firstMatch(path)
+        case final readPath? when r.method == 'PUT') {
+      final c = channels
+          .where((x) => x.id == int.parse(readPath.group(1)!) && x.canView(me))
+          .firstOrNull;
+      if (c == null) return _error(404, 'not_found', 'channel not found');
+      final newest = messages
+          .where((m) => m.channelId == c.id)
+          .fold(0, (a, m) => m.id > a ? m.id : a);
+      final wanted = (body['message_id'] as int).clamp(0, newest);
+      final last = max(readStates[(me.id, c.id)] ?? 0, wanted);
+      readStates[(me.id, c.id)] = last;
+      pushAll('channel.read', {
+        'channel_id': c.id,
+        'last_read_id': last,
+      }, (u) => u.id == me.id);
+      return http.Response('', 204);
+    }
+
     if (channel != null && messageId != null && r.method == 'PATCH') {
       final m = messages
           .where((m) => m.id == messageId && m.channelId == channel.id)
@@ -626,6 +806,7 @@ class FakeServer {
       m
         ..content = body['content'] as String
         ..editedAt = DateTime.now();
+      _setMentions(m);
       pushAll('message.updated', m.toJson(), channel.canView);
       return _json(200, {'message': m.toJson()});
     }
@@ -684,6 +865,19 @@ class FakeServer {
           if (!channel.canSend(me)) {
             return _error(403, 'read_only', 'you cannot write in this channel');
           }
+          final files = <FakeUpload>[];
+          for (final id in (body['attachments'] as List?) ?? const []) {
+            final u = uploads[id];
+            final used = messages.any((x) => x.attachments.contains(u));
+            if (u == null || u.uploader.id != me.id || used) {
+              return _error(
+                400,
+                'invalid_attachments',
+                'attachments: unknown upload, or already attached',
+              );
+            }
+            files.add(u);
+          }
           FakeMessage? replyTo;
           if (body['reply_to'] case final int id) {
             replyTo = messages
@@ -703,7 +897,8 @@ class FakeServer {
             me.username,
             body['content'] as String,
             replyTo: replyTo,
-          );
+          )..attachments = files;
+          readStates[(me.id, channel.id)] = m.id; // sending marks it read
           pushAll('message.created', m.toJson(), channel.canView);
           return _json(201, {'message': m.toJson()});
       }
@@ -711,7 +906,11 @@ class FakeServer {
     return _error(404, 'not_found', 'route not found');
   }
 
-  Map<String, Object?> _channelJson(FakeChannel c, {bool withPreview = false}) {
+  Map<String, Object?> _channelJson(
+    FakeChannel c, {
+    bool withPreview = false,
+    FakeUser? viewer,
+  }) {
     final last = messages
         .where((m) => m.channelId == c.id && !m.deleted)
         .lastOrNull;
@@ -730,6 +929,7 @@ class FakeServer {
               'created_at': last.createdAt.toUtc().toIso8601String(),
             }
           : null,
+      if (viewer != null) ..._unread(viewer, c),
     };
   }
 
@@ -820,3 +1020,40 @@ Future<void> accountMenu(WidgetTester tester, String entry) async {
 }
 
 const serverUrl = 'http://127.0.0.1:8080';
+
+/// An uploaded file on the fake server. Like the real one, the CONTENT decides whether
+/// it is an image (here: only PNG, read from the file's header).
+class FakeUpload {
+  FakeUpload(this.id, this.name, this.bytes, this.uploader);
+  final int id;
+  final String name;
+  final List<int> bytes;
+  final FakeUser uploader;
+
+  bool get isPng =>
+      bytes.length > 24 &&
+      bytes[0] == 0x89 &&
+      String.fromCharCodes(bytes.sublist(1, 4)) == 'PNG';
+
+  int _be32(int at) =>
+      bytes[at] << 24 |
+      bytes[at + 1] << 16 |
+      bytes[at + 2] << 8 |
+      bytes[at + 3];
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'filename': name,
+    'content_type': isPng ? 'image/png' : 'application/octet-stream',
+    'size': bytes.length,
+    'width': isPng
+        ? _be32(16)
+        : null, // PNG: width and height are in the IHDR chunk
+    'height': isPng ? _be32(20) : null,
+  };
+}
+
+/// A real 2x1 pixel PNG.
+final tinyPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAFElEQVR4nAAHAPj/AshQKChQyAMACNUCgw8qW4UAAAAASUVORK5CYII=',
+);

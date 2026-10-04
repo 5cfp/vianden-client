@@ -73,7 +73,10 @@ void main() {
       final sent = server.messages.last;
       expect(sent.content, 'yes please');
       expect(sent.replyTo?.id, q.id);
-      expect(find.byKey(const Key('reply-bar')), findsNothing); // back to normal
+      expect(
+        find.byKey(const Key('reply-bar')),
+        findsNothing,
+      ); // back to normal
       // The new message shows the quote of the original above it.
       expect(find.byKey(Key('quote-${q.id}')), findsOneWidget);
       expect(
@@ -117,25 +120,29 @@ void main() {
       expect(find.text('Original message deleted'), findsOneWidget);
     });
 
-    testWidgets('tapping a quote scrolls up to the original, loading older pages', (
-      tester,
-    ) async {
-      final first = server.post(1, 'osama', 'the very first message');
-      for (var i = 0; i < 80; i++) {
-        server.post(1, 'osama', 'filler $i');
-      }
-      server.post(1, 'friend', 'remember this?', replyTo: first);
-      await pumpLoggedIn(tester, server, store, 'friend');
-      expect(find.byKey(Key('message-${first.id}')), findsNothing); // not loaded
+    testWidgets(
+      'tapping a quote scrolls up to the original, loading older pages',
+      (tester) async {
+        final first = server.post(1, 'osama', 'the very first message');
+        for (var i = 0; i < 80; i++) {
+          server.post(1, 'osama', 'filler $i');
+        }
+        server.post(1, 'friend', 'remember this?', replyTo: first);
+        await pumpLoggedIn(tester, server, store, 'friend');
+        expect(
+          find.byKey(Key('message-${first.id}')),
+          findsNothing,
+        ); // not loaded
 
-      await tapKey(tester, 'quote-${first.id}');
-      await tester.pumpAndSettle();
-      expect(find.byKey(Key('message-${first.id}')), findsOneWidget);
-      expect(
-        server.requests.where((r) => r.url.queryParameters['before'] != null),
-        isNotEmpty, // it had to load the older page
-      );
-    });
+        await tapKey(tester, 'quote-${first.id}');
+        await tester.pumpAndSettle();
+        expect(find.byKey(Key('message-${first.id}')), findsOneWidget);
+        expect(
+          server.requests.where((r) => r.url.queryParameters['before'] != null),
+          isNotEmpty, // it had to load the older page
+        );
+      },
+    );
   });
 
   group('editing', () {

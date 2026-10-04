@@ -36,4 +36,5 @@ abstract final class Permission {
   static const deleteMessages = 'delete_messages';
   static const kickMembers = 'kick_members';
   static const banMembers = 'ban_members';
+  static const mentionEveryone = 'mention_everyone';
 }

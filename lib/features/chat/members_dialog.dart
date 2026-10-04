@@ -6,6 +6,7 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/permissions.dart';
 import '../../widgets/centered_form.dart';
+import '../../widgets/user_avatar.dart';
 import 'chat_providers.dart';
 
 /// The member list: everyone sees names and roles. Moderators and up also get
@@ -88,6 +89,11 @@ class _MemberTile extends ConsumerWidget {
     return ListTile(
       key: Key('member-${member.id}'),
       contentPadding: EdgeInsets.zero,
+      leading: UserAvatar(
+        name: member.displayName,
+        avatar: member.avatar,
+        size: 32,
+      ),
       title: Text(
         member.displayName,
         style: banned

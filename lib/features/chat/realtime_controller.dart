@@ -231,11 +231,28 @@ class RealtimeController extends Notifier<RealtimeState> {
           }
         case 'message.created':
           final m = Message.fromJson(data);
-          ref.read(channelsProvider.notifier).applyMessage(m);
+          final me = ref.read(sessionProvider).value;
+          final myId = me is LoggedIn ? me.user.id : null;
+          // Counted as unread unless we sent it; the open room clears it right away
+          // (MessageView marks what is on screen as read).
+          ref
+              .read(channelsProvider.notifier)
+              .applyMessage(
+                m,
+                unread: m.author?.id != myId,
+                mentionsMe: myId != null && m.mentionsUser(myId),
+              );
           if (ref.exists(messagesProvider(m.channelId))) {
             ref.read(messagesProvider(m.channelId).notifier).addMessage(m);
           }
           if (m.author case final a?) _stopTyping(m.channelId, a.id);
+        case 'channel.read':
+          if (data case {
+            'channel_id': int channelId,
+            'last_read_id': int last,
+          }) {
+            ref.read(channelsProvider.notifier).applyRead(channelId, last);
+          }
         case 'message.updated':
           final m = Message.fromJson(data);
           if (ref.exists(messagesProvider(m.channelId))) {
@@ -253,6 +270,22 @@ class RealtimeController extends Notifier<RealtimeState> {
           final member = Member.fromJson(data);
           if (ref.exists(membersProvider)) {
             ref.read(membersProvider.notifier).applyUpdate(member);
+          }
+          // A rename also shows in "who is online".
+          if (state.online[member.id] case final o?
+              when o.displayName != member.displayName) {
+            _set(
+              state.copyWith(
+                online: {
+                  ...state.online,
+                  member.id: Author(
+                    id: o.id,
+                    username: o.username,
+                    displayName: member.displayName,
+                  ),
+                },
+              ),
+            );
           }
           final me = ref.read(sessionProvider).value;
           if (me is LoggedIn && me.user.id == member.id) {

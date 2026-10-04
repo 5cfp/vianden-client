@@ -1,4 +1,6 @@
-import 'package:flutter/widgets.dart' show StringCharacters;
+import 'dart:math' show min;
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
@@ -43,29 +45,64 @@ class ChannelsController extends AsyncNotifier<List<Channel>> {
     );
   }
 
-  /// Updates a room's last-message preview from a live event (no server request).
-  void applyMessage(Message m) {
+  /// Updates a room from a live message (no server request): its preview, and its
+  /// unread / mention badges if the message is new to us ([unread]).
+  void applyMessage(
+    Message m, {
+    required bool unread,
+    required bool mentionsMe,
+  }) {
     final rooms = state.value;
     if (rooms == null) return;
-    final content = m.content.characters.length > 100
-        ? '${m.content.characters.take(100)}…' // same rule as the server
+    // Shortened like the server does: 100 code points ("runes"), then "…".
+    final content = m.content.runes.length > 100
+        ? '${String.fromCharCodes(m.content.runes.take(100))}…'
         : m.content;
     state = AsyncData([
       for (final r in rooms)
         r.id == m.channelId
-            ? Channel(
-                id: r.id,
-                name: r.name,
-                topic: r.topic,
-                position: r.position,
+            // copyWith keeps everything else (e.g. who may write here).
+            ? r.copyWith(
                 lastMessage: MessagePreview(
                   authorName: m.author?.displayName ?? '',
                   content: content,
                   createdAt: m.createdAt,
                 ),
+                unreadCount: unread ? min(r.unreadCount + 1, 100) : null,
+                mentionCount: unread && mentionsMe
+                    ? min(r.mentionCount + 1, 100)
+                    : null,
               )
             : r,
     ]);
+  }
+
+  /// We read a room up to [messageId] (here, or on another device): clear its badges.
+  void applyRead(int channelId, int messageId) {
+    final rooms = state.value;
+    if (rooms == null) return;
+    state = AsyncData([
+      for (final r in rooms)
+        r.id == channelId && messageId >= r.lastReadId
+            ? r.copyWith(lastReadId: messageId, unreadCount: 0, mentionCount: 0)
+            : r,
+    ]);
+  }
+
+  /// The user is looking at a room whose newest message is [messageId]: clear the
+  /// badges at once and tell the server (only if something is new).
+  Future<void> markRead(int channelId, int messageId) async {
+    final room = state.value?.where((r) => r.id == channelId).firstOrNull;
+    if (room == null ||
+        (messageId <= room.lastReadId && room.unreadCount == 0)) {
+      return;
+    }
+    applyRead(channelId, messageId);
+    try {
+      await _authorized(ref, (api) => api.markRead(channelId, messageId));
+    } on Exception {
+      // Not important enough to bother the user; the next read will catch up.
+    }
   }
 
   /// Owner only (the server checks). Returns the new room.
@@ -279,10 +316,19 @@ class MessagesController extends AsyncNotifier<MessagesState> {
   }
 
   /// Sends a message and shows it right away. Throws on failure so the composer can keep the text.
-  Future<void> send(String content, {int? replyTo}) async {
+  Future<void> send(
+    String content, {
+    int? replyTo,
+    List<int> attachments = const [],
+  }) async {
     final sent = await _authorized(
       ref,
-      (api) => api.sendMessage(channelId, content, replyTo: replyTo),
+      (api) => api.sendMessage(
+        channelId,
+        content,
+        replyTo: replyTo,
+        attachments: attachments,
+      ),
     );
     if (!ref.mounted) return;
     final current = state.value;
@@ -397,8 +443,113 @@ class MembersController extends AsyncNotifier<List<Member>> {
                 role: updated.role,
                 banned: m.banned,
                 banReason: m.banReason,
+                avatar: updated.avatar,
               )
             : m,
     ]);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Attachments (M6)
+// ---------------------------------------------------------------------------
+
+/// Downloaded files, newest last, at most [maxBytes] in total (the oldest are dropped).
+class AttachmentCache {
+  static const maxBytes = 64 * 1024 * 1024;
+
+  final _files = <int, Uint8List>{}; // a Dart map keeps insertion order
+  int _total = 0;
+
+  Uint8List? get(int id) {
+    final bytes = _files.remove(id);
+    if (bytes != null) _files[id] = bytes; // move to the end: recently used
+    return bytes;
+  }
+
+  void put(int id, Uint8List bytes) {
+    if (bytes.length > maxBytes) return;
+    _files[id] = bytes;
+    _total += bytes.length;
+    while (_total > maxBytes) {
+      final oldest = _files.keys.first;
+      _total -= _files.remove(oldest)!.length;
+    }
+  }
+}
+
+/// One cache per login: watching the token means a new cache after logout/login, so one
+/// account can never see files cached for another.
+final attachmentCacheProvider = Provider<AttachmentCache>((ref) {
+  ref.watch(
+    sessionProvider.select(
+      (s) => switch (s.value) {
+        LoggedIn(:final token) => token,
+        _ => null,
+      },
+    ),
+  );
+  return AttachmentCache();
+});
+
+/// The bytes of one attachment (from the cache, or downloaded).
+final attachmentBytesProvider = FutureProvider.autoDispose
+    .family<Uint8List, int>(
+      // Riverpod retries failed providers by itself. Only worth it for network
+      // trouble (3 tries); "not found" or "no access" will not change by asking again.
+      retry: (count, error) => error is NetworkException && count < 3
+          ? Duration(seconds: 1 << count)
+          : null,
+      (ref, id) async {
+        final cache = ref.watch(attachmentCacheProvider);
+        if (cache.get(id) case final cached?) return cached;
+        final bytes = Uint8List.fromList(
+          await _authorized(ref, (api) => api.downloadAttachment(id)),
+        );
+        cache.put(id, bytes);
+        return bytes;
+      },
+    );
+
+// ---------------------------------------------------------------------------
+// Avatars (M6)
+// ---------------------------------------------------------------------------
+
+/// Downloaded avatars by URL path, one cache per login (like [attachmentCacheProvider]).
+/// Avatars are small (256x256 PNG) and a new avatar has a new path, so entries never
+/// go stale.
+final avatarCacheProvider = Provider<Map<String, Uint8List>>((ref) {
+  ref.watch(
+    sessionProvider.select(
+      (s) => switch (s.value) {
+        LoggedIn(:final token) => token,
+        _ => null,
+      },
+    ),
+  );
+  return {};
+});
+
+final avatarBytesProvider = FutureProvider.autoDispose
+    .family<Uint8List, String>(
+      retry: (count, error) => error is NetworkException && count < 3
+          ? Duration(seconds: 1 << count)
+          : null,
+      (ref, path) async {
+        final cache = ref.watch(avatarCacheProvider);
+        if (cache[path] case final cached?) return cached;
+        final bytes = Uint8List.fromList(
+          await _authorized(ref, (api) => api.downloadAvatar(path)),
+        );
+        cache[path] = bytes;
+        return bytes;
+      },
+    );
+
+/// Members by id (name and avatar of message authors, live after renames).
+final membersByIdProvider = Provider.autoDispose<Map<int, Member>>(
+  (ref) => {
+    for (final m in ref.watch(membersProvider).value ?? const <Member>[])
+      m.id: m,
+  },
+);

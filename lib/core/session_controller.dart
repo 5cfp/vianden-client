@@ -207,6 +207,13 @@ class SessionController extends AsyncNotifier<AppState> {
     state = AsyncData(LoggedOut(current.server, current.info));
   }
 
+  /// Shows changes to our own profile (name, avatar) that the server confirmed.
+  void setUser(User user) {
+    if (state.value case final LoggedIn now when now.user.id == user.id) {
+      state = AsyncData(LoggedIn(now.server, now.info, user, now.token));
+    }
+  }
+
   /// Reloads the logged-in user (after a role change): permissions and visible channels change.
   Future<void> refreshMe() async {
     final current = state.value;

@@ -13,6 +13,7 @@ class User {
     required this.displayName,
     required this.role,
     this.permissions = const {},
+    this.avatar,
   });
 
   factory User.fromJson(Object? json) {
@@ -37,6 +38,7 @@ class User {
                   if (p is String) p,
               }
             : const {},
+        avatar: _avatarPath(map['avatar']),
       );
     }
     throw const FormatException('unexpected user object');
@@ -49,6 +51,9 @@ class User {
 
   /// What this user may do (from the server). Only used to show or hide actions.
   final Set<String> permissions;
+
+  /// URL path of the avatar (e.g. /api/v1/avatars/...), or null.
+  final String? avatar;
 
   bool get isOwner => role == Role.owner;
   bool can(String permission) => permissions.contains(permission);
@@ -125,6 +130,9 @@ class Channel {
     this.viewRole = Role.member,
     this.sendRole = Role.member,
     this.lastMessage,
+    this.lastReadId = 0,
+    this.unreadCount = 0,
+    this.mentionCount = 0,
   });
 
   factory Channel.fromJson(Object? json) {
@@ -143,6 +151,9 @@ class Channel {
         viewRole: Role.parse((json)['view_role'] as String?),
         sendRole: Role.parse((json)['send_role'] as String?),
         lastMessage: last == null ? null : MessagePreview.fromJson(last),
+        lastReadId: _int(json['last_read_id']),
+        unreadCount: _int(json['unread_count']),
+        mentionCount: _int(json['mention_count']),
       );
     }
     throw const FormatException('unexpected channel object');
@@ -158,10 +169,38 @@ class Channel {
   final Role sendRole;
   final MessagePreview? lastMessage;
 
+  /// For the logged-in user: newest message read, and how many newer ones (and
+  /// mentions) there are. The server stops counting at 100 ("99+").
+  final int lastReadId;
+  final int unreadCount;
+  final int mentionCount;
+
   bool canSend(Role r) => r.atLeast(viewRole) && r.atLeast(sendRole);
   bool get isPrivate => viewRole != Role.member;
   bool get isReadOnlyForMembers => sendRole != Role.member;
+
+  /// A copy with some fields changed (everything else, like the access roles, is kept).
+  Channel copyWith({
+    MessagePreview? lastMessage,
+    int? lastReadId,
+    int? unreadCount,
+    int? mentionCount,
+  }) => Channel(
+    id: id,
+    name: name,
+    topic: topic,
+    position: position,
+    viewRole: viewRole,
+    sendRole: sendRole,
+    lastMessage: lastMessage ?? this.lastMessage,
+    lastReadId: lastReadId ?? this.lastReadId,
+    unreadCount: unreadCount ?? this.unreadCount,
+    mentionCount: mentionCount ?? this.mentionCount,
+  );
 }
+
+/// An optional integer field (missing on older servers) as 0.
+int _int(Object? v) => v is int ? v : 0;
 
 class MessagePreview {
   const MessagePreview({
@@ -263,6 +302,9 @@ class Message {
     this.deleted = false,
     this.editedAt,
     this.replyTo,
+    this.mentions = const [],
+    this.mentionsEveryone = false,
+    this.attachments = const [],
   });
 
   factory Message.fromJson(Object? json) {
@@ -285,6 +327,15 @@ class Message {
         deleted: map['deleted'] == true,
         editedAt: edited is String ? DateTime.parse(edited) : null,
         replyTo: reply == null ? null : ReplyQuote.fromJson(reply),
+        mentions: [
+          if (map['mentions'] case final List<Object?> list)
+            for (final a in list) Author.fromJson(a),
+        ],
+        mentionsEveryone: map['mentions_everyone'] == true,
+        attachments: [
+          if (map['attachments'] case final List<Object?> list)
+            for (final a in list) Attachment.fromJson(a),
+        ],
       );
     }
     throw const FormatException('unexpected message object');
@@ -305,6 +356,17 @@ class Message {
   /// The message this one answers; null if it is not a reply.
   final ReplyQuote? replyTo;
 
+  /// Who it pings (@username, or a reply to them), and whether it pinged @everyone.
+  final List<Author> mentions;
+  final bool mentionsEveryone;
+
+  /// Files sent with it (none once it is deleted).
+  final List<Attachment> attachments;
+
+  /// Does this message ping the user with this id?
+  bool mentionsUser(int userId) =>
+      mentionsEveryone || mentions.any((a) => a.id == userId);
+
   Message _copy({
     String? content,
     bool? deleted,
@@ -319,6 +381,9 @@ class Message {
     deleted: deleted ?? this.deleted,
     editedAt: editedAt ?? this.editedAt,
     replyTo: replyTo ?? this.replyTo,
+    mentions: mentions,
+    mentionsEveryone: mentionsEveryone,
+    attachments: deleted == true ? const [] : attachments,
   );
 
   Message asDeleted() => _copy(content: '', deleted: true);
@@ -346,6 +411,7 @@ class Member {
     required this.role,
     this.banned,
     this.banReason,
+    this.avatar,
   });
 
   factory Member.fromJson(Object? json) {
@@ -365,6 +431,7 @@ class Member {
         banReason: map['ban_reason'] is String
             ? map['ban_reason'] as String
             : null,
+        avatar: _avatarPath(map['avatar']),
       );
     }
     throw const FormatException('unexpected member object');
@@ -378,4 +445,69 @@ class Member {
   /// null when the viewer may not see ban details.
   final bool? banned;
   final String? banReason;
+
+  /// URL path of the avatar, or null.
+  final String? avatar;
 }
+
+/// An uploaded file. Images (decided by the server from the content) are shown inline;
+/// everything else is offered as a download.
+class Attachment {
+  const Attachment({
+    required this.id,
+    required this.filename,
+    required this.contentType,
+    required this.size,
+    this.width,
+    this.height,
+  });
+
+  factory Attachment.fromJson(Object? json) {
+    if (json case {
+      'id': int id,
+      'filename': String filename,
+      'content_type': String contentType,
+      'size': int size,
+    }) {
+      return Attachment(
+        id: id,
+        filename: filename,
+        contentType: contentType,
+        size: size,
+        width: (json as Map)['width'] as int?,
+        height: json['height'] as int?,
+      );
+    }
+    throw const FormatException('unexpected attachment object');
+  }
+
+  final int id;
+  final String filename;
+  final String contentType;
+  final int size;
+  final int? width;
+  final int? height;
+
+  static const _imageTypes = {
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+  };
+
+  bool get isImage => _imageTypes.contains(contentType);
+
+  /// "2.4 MB", "830 KB", "12 bytes".
+  String get sizeLabel => switch (size) {
+    < 1024 => '$size bytes',
+    < 1024 * 1024 => '${(size / 1024).round()} KB',
+    _ => '${(size / (1024 * 1024)).toStringAsFixed(1)} MB',
+  };
+}
+
+/// Accepts only avatar paths on this server (`/api/v1/avatars/<hex>`), so a server can
+/// never make the app fetch some other URL.
+String? _avatarPath(Object? v) =>
+    v is String && RegExp(r'^/api/v1/avatars/[0-9a-f]{64}$').hasMatch(v)
+    ? v
+    : null;
