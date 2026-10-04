@@ -16,6 +16,12 @@ abstract final class AppConfig {
   /// Empty in the official client; a branded build can preset it.
   static const defaultServerAddress = '';
 
+  /// Shown on the About page. Keep in sync with "version:" in pubspec.yaml.
+  static const appVersion = '0.1.0';
+
+  /// Copyright line on the About page.
+  static const legalese = '© 2026 Osama Alamri · MIT License';
+
   /// Brand accent: buttons, selection marks, unread counts. White text must be readable on it.
   static const accentColor = Color(0xFFB8441A); // burnt orange (design C2)
 }

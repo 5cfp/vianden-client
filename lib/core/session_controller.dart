@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 
+import 'certificate_trust.dart';
 import 'api_client.dart';
 import 'models.dart';
 import 'server_info.dart';
@@ -11,9 +13,15 @@ import 'session_store.dart';
 // Tests replace (override) the first two with fakes.
 // ---------------------------------------------------------------------------
 
-/// One HTTP client for the whole app, closed when the app shuts down.
+/// Remembers trusted self-signed certificates (see certificate_trust.dart).
+final certificateTrustProvider = Provider<CertificateTrust>(
+  (ref) => CertificateTrust(),
+);
+
+/// One HTTP client for the whole app, closed when the app shuts down. It accepts normal
+/// (trusted) certificates, plus self-signed ones the user pinned.
 final httpClientProvider = Provider<http.Client>((ref) {
-  final client = http.Client();
+  final client = IOClient(ref.read(certificateTrustProvider).httpClient());
   ref.onDispose(client.close);
   return client;
 });
@@ -82,15 +90,30 @@ class SessionController extends AsyncNotifier<AppState> {
   Future<AppState> build() => _restore();
 
   Future<AppState> _restore() async {
+    ref.read(certificateTrustProvider).load(await _store.readCertificatePins());
     final saved = await _store.readServer();
     if (saved == null) return const NeedsServer();
     final server = Uri.parse(saved);
 
     final ServerInfo info;
     try {
-      info = await fetchServerInfo(server, client: _http);
+      info = await fetchServerInfo(
+        server,
+        client: _http,
+        trust: ref.read(certificateTrustProvider),
+      );
     } on ConnectException catch (e) {
       return ServerProblem(server, e.message);
+    } on UntrustedCertificateException catch (e) {
+      return ServerProblem(
+        server,
+        e.changed
+            ? "WARNING: the server's certificate CHANGED since you trusted it. "
+                  'This can mean someone is intercepting the connection. Do not '
+                  'continue unless the server owner confirms the new fingerprint:\n'
+                  '${e.fingerprint}'
+            : "The server's certificate is not trusted.",
+      );
     }
 
     final token = await _store.readToken();
@@ -116,6 +139,12 @@ class SessionController extends AsyncNotifier<AppState> {
   Future<void> retry() async {
     state = const AsyncLoading();
     state = AsyncData(await _restore());
+  }
+
+  /// The user confirmed a self-signed certificate's fingerprint: remember it.
+  Future<void> trustCertificate(Uri server, String fingerprint) async {
+    final pins = ref.read(certificateTrustProvider).trust(server, fingerprint);
+    await _store.writeCertificatePins(pins);
   }
 
   /// The connect screen found a compatible server.

@@ -8,8 +8,10 @@ import 'features/auth/auth_screen.dart';
 import 'features/chat/chat_screen.dart';
 import 'features/connect/connect_screen.dart';
 import 'features/connect/server_problem_screen.dart';
+import 'widgets/about.dart';
 
 void main() {
+  registerAppLicense();
   // ProviderScope holds the state of all Riverpod providers for the whole app.
   runApp(const ProviderScope(child: ViandenApp()));
 }

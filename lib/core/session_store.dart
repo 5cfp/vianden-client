@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// Remembers the chosen server and the session token between app starts.
@@ -9,6 +11,10 @@ abstract interface class SessionStore {
   Future<String?> readToken();
   Future<void> writeToken(String token);
   Future<void> deleteToken();
+
+  /// Trusted self-signed certificates ("host:port" -> fingerprint). Kept when changing server.
+  Future<Map<String, String>> readCertificatePins();
+  Future<void> writeCertificatePins(Map<String, String> pins);
 
   /// Forgets everything (server and token).
   Future<void> clear();
@@ -27,6 +33,7 @@ class SecureSessionStore implements SessionStore {
 
   static const _serverKey = 'server_address';
   static const _tokenKey = 'session_token';
+  static const _pinsKey = 'certificate_pins';
 
   @override
   Future<String?> readServer() => _storage.read(key: _serverKey);
@@ -44,6 +51,21 @@ class SecureSessionStore implements SessionStore {
 
   @override
   Future<void> deleteToken() => _storage.delete(key: _tokenKey);
+
+  @override
+  Future<Map<String, String>> readCertificatePins() async {
+    final raw = await _storage.read(key: _pinsKey);
+    if (raw == null) return {};
+    try {
+      return Map<String, String>.from(jsonDecode(raw) as Map);
+    } on Object {
+      return {}; // corrupted: start fresh (the user is asked again)
+    }
+  }
+
+  @override
+  Future<void> writeCertificatePins(Map<String, String> pins) =>
+      _storage.write(key: _pinsKey, value: jsonEncode(pins));
 
   @override
   Future<void> clear() async {

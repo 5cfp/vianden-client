@@ -6,6 +6,7 @@ import '../../app_config/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/session_controller.dart';
 import 'chat_providers.dart';
+import '../../widgets/about.dart';
 import 'dialogs.dart';
 import 'realtime_controller.dart';
 import 'time_format.dart';
@@ -304,6 +305,8 @@ class _AccountBar extends ConsumerWidget {
                   controller.changeServer();
                 case 'logout':
                   controller.logout();
+                case 'about':
+                  showAbout(context);
               }
             },
             itemBuilder: (_) => [
@@ -315,6 +318,10 @@ class _AccountBar extends ConsumerWidget {
               const PopupMenuItem(
                 value: 'server',
                 child: Text('Change server'),
+              ),
+              const PopupMenuItem(
+                value: 'about',
+                child: Text('About & licenses'),
               ),
               const PopupMenuItem(value: 'logout', child: Text('Log out')),
             ],

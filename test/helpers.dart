@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:vianden_client/core/certificate_trust.dart';
 import 'package:vianden_client/core/realtime_connection.dart';
 import 'package:vianden_client/core/session_controller.dart';
 import 'package:vianden_client/core/session_store.dart';
@@ -17,6 +18,7 @@ import 'package:vianden_client/main.dart';
 class MemorySessionStore implements SessionStore {
   String? server;
   String? token;
+  Map<String, String> pins = {};
 
   @override
   Future<String?> readServer() async => server;
@@ -28,6 +30,11 @@ class MemorySessionStore implements SessionStore {
   Future<void> writeToken(String t) async => token = t;
   @override
   Future<void> deleteToken() async => token = null;
+  @override
+  Future<Map<String, String>> readCertificatePins() async => Map.of(pins);
+  @override
+  Future<void> writeCertificatePins(Map<String, String> p) async =>
+      pins = Map.of(p);
   @override
   Future<void> clear() async => server = token = null;
 }
@@ -175,7 +182,19 @@ class FakeServer {
   var _nextMessageId = 1;
   var _nextChannelId = 2;
 
-  late final http.Client client = MockClient(_handle);
+  /// If set, the server presents this self-signed certificate on https:// addresses, and
+  /// the app's [trust] decides (like dart:io's badCertificateCallback) whether to accept it.
+  List<int>? selfSignedCert;
+  CertificateTrust? trust;
+
+  late final http.Client client = MockClient((r) async {
+    if (r.url.scheme == 'https' && selfSignedCert != null) {
+      if (!trust!.check(selfSignedCert!, r.url.host, r.url.port)) {
+        throw const HandshakeException('CERTIFICATE_VERIFY_FAILED');
+      }
+    }
+    return _handle(r);
+  });
 
   FakeUser user(String username) =>
       users.firstWhere((u) => u.username == username);
@@ -518,6 +537,9 @@ Future<void> pumpApp(
         httpClientProvider.overrideWithValue(server.client),
         sessionStoreProvider.overrideWithValue(store),
         realtimeConnectorProvider.overrideWithValue(server.connect),
+        certificateTrustProvider.overrideWithValue(
+          server.trust ??= CertificateTrust(),
+        ),
       ],
       child: const ViandenApp(),
     ),

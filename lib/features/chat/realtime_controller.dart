@@ -13,7 +13,12 @@ import 'chat_providers.dart';
 
 /// How the app opens live connections. Tests replace it with a fake.
 final realtimeConnectorProvider = Provider<RealtimeConnector>(
-  (ref) => WebSocketConnection.new,
+  (ref) =>
+      (url, token) => WebSocketConnection(
+        url,
+        token,
+        ref.read(certificateTrustProvider).httpClient(),
+      ),
 );
 
 /// The live connection's state: status, who is online, who is typing.

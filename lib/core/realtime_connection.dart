@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:web_socket_channel/io.dart';
 
 /// One live connection to the server's WebSocket (`/api/v1/ws`).
@@ -23,9 +25,11 @@ typedef RealtimeConnector = RealtimeConnection Function(Uri url, String token);
 
 /// The real connection, using a WebSocket.
 class WebSocketConnection implements RealtimeConnection {
-  WebSocketConnection(Uri url, String token)
+  WebSocketConnection(Uri url, String token, [HttpClient? httpClient])
     : _channel = IOWebSocketChannel.connect(
         url,
+        // The same certificate rules as REST (trusted CAs, plus pinned self-signed ones).
+        customClient: httpClient,
         // Same header as REST requests. Never put the token in the URL: URLs end up in logs.
         headers: {'Authorization': 'Bearer $token'},
         connectTimeout: const Duration(seconds: 10),

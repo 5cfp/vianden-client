@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import 'certificate_trust.dart';
+
 /// The API protocol version this client understands (see the server's docs/API.md).
 const supportedProtocolVersion = 1;
 
@@ -48,9 +50,13 @@ class ConnectException implements Exception {
 /// Calls `GET /api/v1/info` on [server] and checks that the protocol versions match.
 ///
 /// Throws [ConnectException] on any failure.
+///
+/// With [trust], a refused self-signed certificate becomes an [UntrustedCertificateException]
+/// (carrying its fingerprint), so the app can ask the user to verify it.
 Future<ServerInfo> fetchServerInfo(
   Uri server, {
   required http.Client client,
+  CertificateTrust? trust,
 }) async {
   final url = server.replace(path: '/api/v1/info');
 
@@ -60,6 +66,13 @@ Future<ServerInfo> fetchServerInfo(
   } on TimeoutException {
     throw const ConnectException('The server did not answer in time.');
   } on HandshakeException {
+    if (trust?.rejectedFor(server) case final fingerprint?) {
+      throw UntrustedCertificateException(
+        server: server,
+        fingerprint: fingerprint,
+        previousFingerprint: trust!.pinnedFor(server),
+      );
+    }
     throw const ConnectException(
       'Secure connection failed. If this is a local development server, try http:// instead.',
     );

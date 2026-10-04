@@ -50,3 +50,6 @@ app.*.map.json
 # Secrets: never commit
 .env
 *.env
+
+# Release builds
+/dist/
