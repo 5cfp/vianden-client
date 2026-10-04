@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart' show StringCharacters;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
@@ -39,6 +40,31 @@ class ChannelsController extends AsyncNotifier<List<Channel>> {
     state = await AsyncValue.guard(
       () => _authorized(ref, (api) => api.listChannels()),
     );
+  }
+
+  /// Updates a room's last-message preview from a live event (no server request).
+  void applyMessage(Message m) {
+    final rooms = state.value;
+    if (rooms == null) return;
+    final content = m.content.characters.length > 100
+        ? '${m.content.characters.take(100)}…' // same rule as the server
+        : m.content;
+    state = AsyncData([
+      for (final r in rooms)
+        r.id == m.channelId
+            ? Channel(
+                id: r.id,
+                name: r.name,
+                topic: r.topic,
+                position: r.position,
+                lastMessage: MessagePreview(
+                  authorName: m.author?.displayName ?? '',
+                  content: content,
+                  createdAt: m.createdAt,
+                ),
+              )
+            : r,
+    ]);
   }
 
   /// Owner only (the server checks). Returns the new room.
@@ -174,6 +200,15 @@ class MessagesController extends AsyncNotifier<MessagesState> {
     }
     state = AsyncData(
       current.copyWith(messages: _merge(current.messages, page.messages)),
+    );
+  }
+
+  /// Adds a message that arrived live (ignored if we already have it).
+  void addMessage(Message m) {
+    final current = state.value;
+    if (current == null) return;
+    state = AsyncData(
+      current.copyWith(messages: _merge(current.messages, [m])),
     );
   }
 

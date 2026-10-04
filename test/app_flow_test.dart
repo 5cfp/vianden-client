@@ -250,22 +250,23 @@ void main() {
       expect(find.text('Log out'), findsOneWidget);
     });
 
-    testWidgets(
-      'a session revoked elsewhere returns to login on the next request',
-      (tester) async {
-        final token = server.sessionFor('osama');
-        store
-          ..server = serverUrl
-          ..token = token;
-        await pumpApp(tester, server, store);
+    testWidgets('a session logged out elsewhere returns to login right away', (
+      tester,
+    ) async {
+      final token = server.sessionFor('osama');
+      store
+        ..server = serverUrl
+        ..token = token;
+      await pumpApp(tester, server, store);
 
-        server.tokens.remove(token); // e.g. logged out from another device
-        await tapKey(tester, 'refresh');
+      server.endSession(
+        token,
+      ); // e.g. logged out from another device: socket closes with 4001
+      await tester.pumpAndSettle();
 
-        expect(find.byType(AuthScreen), findsOneWidget);
-        expect(store.token, isNull);
-      },
-    );
+      expect(find.byType(AuthScreen), findsOneWidget);
+      expect(store.token, isNull);
+    });
 
     testWidgets('changing server forgets server and token', (tester) async {
       await startAtLogin(tester);

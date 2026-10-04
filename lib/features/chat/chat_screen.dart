@@ -9,6 +9,7 @@ import 'chat_providers.dart';
 import 'composer.dart';
 import 'dialogs.dart';
 import 'message_view.dart';
+import 'realtime_controller.dart';
 import 'room_list.dart';
 
 /// The main screen when logged in: rooms on the left, the open room on the right.
@@ -30,6 +31,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Watching the realtime provider opens the live connection and keeps it open
+    // for as long as this screen is shown.
+    ref.watch(realtimeProvider);
     final rooms = ref.watch(channelsProvider).value ?? const <Channel>[];
     final selectedId = ref.watch(selectedChannelProvider);
 
@@ -135,38 +139,86 @@ class _RoomPane extends ConsumerWidget {
                     ],
                   ),
                 ),
-                IconButton(
-                  key: const Key('refresh'),
-                  tooltip: 'Check for new messages',
-                  icon: const Icon(Icons.refresh),
-                  onPressed: () => _refresh(context, ref),
-                ),
                 if (session.user.isOwner) _RoomMenu(room: room),
               ],
             ),
           ),
           Divider(color: colors.otherBubbleBorder),
+          const _ConnectionBanner(),
           Expanded(
             child: MessageView(channelId: room.id, myUserId: session.user.id),
           ),
+          _TypingLine(channelId: room.id),
           Composer(channelId: room.id, roomName: room.name),
         ],
       ),
     );
   }
+}
 
-  Future<void> _refresh(BuildContext context, WidgetRef ref) async {
-    try {
-      await Future.wait([
-        ref.read(messagesProvider(room.id).notifier).refresh(),
-        ref.read(channelsProvider.notifier).refresh(),
-      ]);
-    } on Exception catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
-      }
-    }
+/// A thin bar while the live connection is down (it reconnects by itself).
+class _ConnectionBanner extends ConsumerWidget {
+  const _ConnectionBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final status = ref.watch(realtimeProvider.select((s) => s.status));
+    if (status != ConnectionStatus.reconnecting) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    return Container(
+      key: const Key('reconnecting'),
+      color: theme.colorScheme.surfaceContainerHighest,
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
+      child: Row(
+        children: [
+          const SizedBox.square(
+            dimension: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Connection lost. Reconnecting…',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "Sara is typing…" above the composer. Always takes the same height, so nothing jumps.
+class _TypingLine extends ConsumerWidget {
+  const _TypingLine({required this.channelId});
+
+  final int channelId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final names = ref.watch(
+      realtimeProvider.select((s) => s.typingIn(channelId)),
+    );
+    final theme = Theme.of(context);
+    final text = switch (names) {
+      [] => '',
+      [final a] => '$a is typing…',
+      [final a, final b] => '$a and $b are typing…',
+      _ => 'Several people are typing…',
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(32, 0, 32, 2),
+      child: SizedBox(
+        height: 18,
+        child: Text(
+          text,
+          key: const Key('typing'),
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.extension<ChatColors>()!.muted,
+            fontStyle: FontStyle.italic,
+          ),
+        ),
+      ),
+    );
   }
 }
 

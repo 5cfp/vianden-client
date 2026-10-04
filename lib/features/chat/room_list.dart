@@ -7,6 +7,7 @@ import '../../core/models.dart';
 import '../../core/session_controller.dart';
 import 'chat_providers.dart';
 import 'dialogs.dart';
+import 'realtime_controller.dart';
 import 'time_format.dart';
 
 /// Left column: server name, rooms (messenger style, with last-message previews), and the account bar.
@@ -44,13 +45,7 @@ class RoomList extends ConsumerWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 6),
-                Text(
-                  '${AppConfig.appName} · ${session.server.host}',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colors.muted,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                const _OnlineLine(),
               ],
             ),
           ),
@@ -116,6 +111,46 @@ class RoomList extends ConsumerWidget {
           ),
           Divider(color: colors.line),
           _AccountBar(session: session),
+        ],
+      ),
+    );
+  }
+}
+
+/// "3 online" under the server name; hovering shows who. "Reconnecting…" while the connection is down.
+class _OnlineLine extends ConsumerWidget {
+  const _OnlineLine();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: theme.extension<ChatColors>()!.muted,
+    );
+    final live = ref.watch(realtimeProvider);
+    if (live.status != ConnectionStatus.connected) {
+      return Text('${AppConfig.appName} · connecting…', style: muted);
+    }
+    final names = live.online.values.map((u) => u.displayName).toList()..sort();
+    return Tooltip(
+      message: names.join(', '),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '${names.length} online',
+            key: const Key('online-count'),
+            style: muted,
+          ),
         ],
       ),
     );

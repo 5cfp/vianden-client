@@ -147,11 +147,10 @@ void main() {
       );
     });
 
-    testWidgets('refresh shows messages others sent meanwhile', (tester) async {
+    testWidgets('messages from others appear instantly', (tester) async {
       await pumpLoggedIn(tester, server, store, 'osama');
-      server.post(1, 'friend', 'new while you were away');
-
-      await tapKey(tester, 'refresh');
+      server.postLive(1, 'friend', 'new while you were away');
+      await tester.pumpAndSettle();
 
       expect(find.text('new while you were away'), findsOneWidget);
       expect(
@@ -319,10 +318,6 @@ void main() {
         expect(
           tester.getTopRight(find.byKey(const Key('room-menu'))).dx,
           greaterThan(1220),
-        );
-        expect(
-          tester.getTopRight(find.byKey(const Key('refresh'))).dx,
-          greaterThan(1170),
         );
       },
     );

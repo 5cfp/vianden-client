@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
 import 'chat_providers.dart';
+import 'realtime_controller.dart';
 
 /// The message input at the bottom of a room. Enter sends; Shift+Enter starts a new line.
 class Composer extends ConsumerStatefulWidget {
@@ -103,6 +104,13 @@ class _ComposerState extends ConsumerState<Composer> {
                       ? Text('$currentLength / $maxLength')
                       : null,
                   keyboardType: TextInputType.multiline,
+                  onChanged: (text) {
+                    if (text.trim().isNotEmpty) {
+                      ref
+                          .read(realtimeProvider.notifier)
+                          .sendTyping(widget.channelId);
+                    }
+                  },
                   decoration: InputDecoration(
                     hintText: 'Write to ${widget.roomName}',
                     filled: false,

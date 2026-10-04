@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:vianden_client/core/realtime_connection.dart';
 import 'package:vianden_client/core/session_controller.dart';
 import 'package:vianden_client/core/session_store.dart';
+import 'package:vianden_client/features/chat/realtime_controller.dart';
 import 'package:vianden_client/main.dart';
 
 /// Keeps "saved" data in memory instead of the real OS storage.
@@ -87,6 +90,66 @@ class FakeMessage {
   };
 }
 
+/// A pretend live connection, as the real hub would behave (docs/API.md section 5).
+class FakeConnection implements RealtimeConnection {
+  FakeConnection(this.server, this.token, this.user);
+
+  final FakeServer server;
+  final String token;
+  final _incoming = StreamController<String>();
+  final _ready = Completer<void>();
+  final sent = <Map<String, dynamic>>[];
+  int? _closeCode;
+
+  /// Who connected (remembered, like the real hub, even if the token is removed later).
+  final FakeUser? user;
+
+  void push(String type, Object? data) {
+    if (!_incoming.isClosed) {
+      _incoming.add(jsonEncode({'type': type, 'data': data}));
+    }
+  }
+
+  /// The server closes the connection (code null = network drop).
+  void serverClose([int? code]) {
+    _closeCode = code;
+    server.connections.remove(this);
+    if (!_incoming.isClosed) _incoming.close();
+  }
+
+  @override
+  Future<void> get ready => _ready.future;
+  @override
+  Stream<String> get messages => _incoming.stream;
+  @override
+  int? get closeCode => _closeCode;
+
+  @override
+  void send(String text) {
+    final msg = jsonDecode(text) as Map<String, dynamic>;
+    sent.add(msg);
+    if (msg case {'type': 'typing', 'data': {'channel_id': final int ch}}) {
+      for (final c in server.connections) {
+        if (c.user!.id != user!.id) {
+          c.push('typing.started', {'channel_id': ch, 'user': _info(user!)});
+        }
+      }
+    }
+  }
+
+  @override
+  Future<void> close() async {
+    server.connections.remove(this);
+    if (!_incoming.isClosed) await _incoming.close();
+  }
+}
+
+Map<String, Object> _info(FakeUser u) => {
+  'id': u.id,
+  'username': u.username,
+  'display_name': u.displayName,
+};
+
 /// A pretend Vianden server that behaves like the real API (docs/API.md).
 class FakeServer {
   String name = 'Friends Server';
@@ -106,6 +169,8 @@ class FakeServer {
     FakeChannel(1, 'General', 'Everything and nothing'),
   ];
   final messages = <FakeMessage>[];
+  final connections = <FakeConnection>[];
+  var connectAttempts = 0;
   var _next = 0;
   var _nextMessageId = 1;
   var _nextChannelId = 2;
@@ -138,6 +203,53 @@ class FakeServer {
     );
     messages.add(m);
     return m;
+  }
+
+  /// What the app's RealtimeConnector calls: opens a fake live connection.
+  RealtimeConnection connect(Uri url, String token) {
+    connectAttempts++;
+    final c = FakeConnection(this, token, tokens[token]);
+    if (down || !tokens.containsKey(token)) {
+      c._ready.completeError(const SocketException('refused'));
+      return c;
+    }
+    connections.add(c);
+    c._ready.complete();
+    final online = {for (final x in connections) x.user!.id: x.user!}.values;
+    c.push('ready', {
+      'user': _info(c.user!),
+      'online': [for (final u in online) _info(u)],
+    });
+    return c;
+  }
+
+  /// Sends an event to every connected client.
+  void pushAll(String type, Object? data) {
+    for (final c in List.of(connections)) {
+      c.push(type, data);
+    }
+  }
+
+  /// Someone else sends a message: stored AND pushed live, like the real server.
+  FakeMessage postLive(int channelId, String username, String content) {
+    final m = post(channelId, username, content);
+    pushAll('message.created', m.toJson());
+    return m;
+  }
+
+  /// Logs a session out on the server: its live connections close with code 4001.
+  void endSession(String token) {
+    tokens.remove(token);
+    for (final c in List.of(connections)) {
+      if (c.token == token) c.serverClose(4001);
+    }
+  }
+
+  /// Simulates a network drop for every connection.
+  void dropAll() {
+    for (final c in List.of(connections)) {
+      c.serverClose();
+    }
   }
 
   Iterable<http.Request> called(String method, String path) =>
@@ -227,7 +339,7 @@ class FakeServer {
         return _json(200, {'user': me.toJson()});
 
       case ('POST', '/api/v1/logout'):
-        tokens.remove(bearer.substring(7));
+        endSession(bearer.substring(7));
         return http.Response('', 204);
 
       case ('POST', '/api/v1/invites'):
@@ -282,6 +394,7 @@ class FakeServer {
           (body['topic'] as String?) ?? '',
         );
         channels.add(c);
+        pushAll('channel.created', _channelJson(c));
         return _json(201, {'channel': _channelJson(c)});
     }
 
@@ -301,10 +414,12 @@ class FakeServer {
         case 'PATCH':
           if (body['name'] case final String n) channel.name = n.trim();
           if (body['topic'] case final String t) channel.topic = t.trim();
+          pushAll('channel.updated', _channelJson(channel));
           return _json(200, {'channel': _channelJson(channel)});
         case 'DELETE':
           channels.remove(channel);
           messages.removeWhere((m) => m.channelId == channel.id);
+          pushAll('channel.deleted', {'id': channel.id});
           return http.Response('', 204);
       }
     }
@@ -335,6 +450,7 @@ class FakeServer {
             });
           }
           final m = post(channel.id, me.username, body['content'] as String);
+          pushAll('message.created', m.toJson());
           return _json(201, {'message': m.toJson()});
       }
     }
@@ -401,6 +517,7 @@ Future<void> pumpApp(
       overrides: [
         httpClientProvider.overrideWithValue(server.client),
         sessionStoreProvider.overrideWithValue(store),
+        realtimeConnectorProvider.overrideWithValue(server.connect),
       ],
       child: const ViandenApp(),
     ),
