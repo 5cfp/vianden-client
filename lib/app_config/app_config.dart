@@ -19,7 +19,7 @@ abstract final class AppConfig {
   /// App version. MUST equal "version:" in pubspec.yaml without the "+build" part
   /// (a test checks this). A "-alpha" or "-beta" suffix marks a pre-release: the app
   /// then shows a badge and a short warning (see widgets/release_badge.dart).
-  static const appVersion = '0.1.0-alpha';
+  static const appVersion = '0.2.0-alpha';
 
   /// "ALPHA", "BETA", ... for pre-releases; null for normal releases.
   static String? get releaseStage {

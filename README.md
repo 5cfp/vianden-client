@@ -28,9 +28,9 @@ Addresses without `http://` or `https://` use **https** by default.
 
 ## Release build (Windows)
 ```powershell
-.scriptsuild-windows.ps1
+.\scripts\build-windows.ps1
 ```
-Runs the tests, builds the release, and writes `distvianden-client_<version>_windows_x64.zip` plus its SHA-256. Friends unzip it and run `vianden_client.exe` (no installer). The app is not code-signed yet, so SmartScreen may warn: **More info → Run anyway**.
+Runs the tests, builds the release, and writes `dist\vianden-client_<version>_windows_x64.zip` plus its SHA-256. Friends unzip it and run `vianden_client.exe` (no installer). The app is not code-signed yet, so SmartScreen may warn: **More info → Run anyway**.
 
 ## Self-signed servers (trust on first use)
 For servers without a domain, the app shows the certificate's fingerprint once; compare it with the one the server owner gives you. The app remembers it and warns if it ever changes.
