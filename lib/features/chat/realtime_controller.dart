@@ -236,6 +236,24 @@ class RealtimeController extends Notifier<RealtimeState> {
             ref.read(messagesProvider(m.channelId).notifier).addMessage(m);
           }
           if (m.author case final a?) _stopTyping(m.channelId, a.id);
+        case 'message.deleted':
+          if (data case {'id': int id, 'channel_id': int channelId}) {
+            if (ref.exists(messagesProvider(channelId))) {
+              ref.read(messagesProvider(channelId).notifier).markDeleted(id);
+            }
+            ref.read(channelsProvider.notifier).refresh(); // preview may change
+          }
+        case 'member.updated':
+          final member = Member.fromJson(data);
+          if (ref.exists(membersProvider)) {
+            ref.read(membersProvider.notifier).applyUpdate(member);
+          }
+          final me = ref.read(sessionProvider).value;
+          if (me is LoggedIn && me.user.id == member.id) {
+            // Our own role changed: reload our permissions and the channels we can see.
+            ref.read(sessionProvider.notifier).refreshMe();
+            ref.read(channelsProvider.notifier).refresh();
+          }
         case 'channel.created' || 'channel.updated' || 'channel.deleted':
           ref.read(channelsProvider.notifier).refresh();
         case 'typing.started':

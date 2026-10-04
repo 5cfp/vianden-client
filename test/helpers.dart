@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:vianden_client/core/certificate_trust.dart';
+import 'package:vianden_client/core/permissions.dart';
 import 'package:vianden_client/core/realtime_connection.dart';
 import 'package:vianden_client/core/session_controller.dart';
 import 'package:vianden_client/core/session_store.dart';
@@ -39,33 +40,85 @@ class MemorySessionStore implements SessionStore {
   Future<void> clear() async => server = token = null;
 }
 
+/// Permissions per role, as on the server (internal/perm).
+const fakeRolePermissions = <Role, List<String>>{
+  Role.owner: [
+    Permission.manageChannels,
+    Permission.manageInvites,
+    Permission.manageRoles,
+    Permission.deleteMessages,
+    Permission.kickMembers,
+    Permission.banMembers,
+  ],
+  Role.admin: [
+    Permission.manageChannels,
+    Permission.manageInvites,
+    Permission.manageRoles,
+    Permission.deleteMessages,
+    Permission.kickMembers,
+    Permission.banMembers,
+  ],
+  Role.moderator: [Permission.deleteMessages, Permission.kickMembers],
+  Role.member: [],
+};
+
 class FakeUser {
   FakeUser(
     this.id,
     this.username,
     this.displayName,
     this.password, {
-    this.isOwner = false,
+    this.role = Role.member,
   });
   final int id;
   final String username;
   final String displayName;
   final String password;
-  final bool isOwner;
+  Role role;
+  bool banned = false;
+  String banReason = '';
+
+  bool can(String p) => fakeRolePermissions[role]!.contains(p);
+
+  /// perm.CanActOn: the permission AND a higher role than the target.
+  bool canActOn(String p, Role target) => can(p) && role.above(target);
 
   Map<String, Object> toJson() => {
     'id': id,
     'username': username,
     'display_name': displayName,
-    'is_owner': isOwner,
+    'role': role.wire,
+    'permissions': fakeRolePermissions[role]!,
+  };
+
+  Map<String, Object> memberJson(FakeUser viewer) => {
+    'id': id,
+    'username': username,
+    'display_name': displayName,
+    'role': role.wire,
+    if (viewer.can(Permission.banMembers)) ...{
+      'banned': banned,
+      'ban_reason': banReason,
+    },
   };
 }
 
 class FakeChannel {
-  FakeChannel(this.id, this.name, [this.topic = '']);
+  FakeChannel(
+    this.id,
+    this.name, [
+    this.topic = '',
+    this.viewRole = Role.member,
+    this.sendRole = Role.member,
+  ]);
   final int id;
   String name;
   String topic;
+  Role viewRole;
+  Role sendRole;
+
+  bool canView(FakeUser u) => u.role.atLeast(viewRole);
+  bool canSend(FakeUser u) => canView(u) && u.role.atLeast(sendRole);
 }
 
 class FakeMessage {
@@ -79,8 +132,9 @@ class FakeMessage {
   final int id;
   final int channelId;
   final FakeUser? author;
-  final String content;
+  String content;
   final DateTime createdAt;
+  bool deleted = false;
 
   Map<String, Object?> toJson() => {
     'id': id,
@@ -93,6 +147,7 @@ class FakeMessage {
             'display_name': author!.displayName,
           },
     'content': content,
+    'deleted': deleted,
     'created_at': createdAt.toUtc().toIso8601String(),
   };
 }
@@ -166,7 +221,7 @@ class FakeServer {
   String? sendRateLimitedFor; // if set: sending messages answers 429
 
   final users = <FakeUser>[
-    FakeUser(1, 'osama', 'Osama', 'owner-pass-1', isOwner: true),
+    FakeUser(1, 'osama', 'Osama', 'owner-pass-1', role: Role.owner),
     FakeUser(2, 'friend', 'Friend', 'friend-pass-1'),
   ];
   final validInvites = {'vi_good'};
@@ -242,18 +297,29 @@ class FakeServer {
     return c;
   }
 
-  /// Sends an event to every connected client.
-  void pushAll(String type, Object? data) {
+  /// Sends an event to every connected client (optionally only to some users).
+  void pushAll(String type, Object? data, [bool Function(FakeUser)? to]) {
     for (final c in List.of(connections)) {
-      c.push(type, data);
+      if (to == null || to(c.user!)) c.push(type, data);
     }
   }
 
   /// Someone else sends a message: stored AND pushed live, like the real server.
   FakeMessage postLive(int channelId, String username, String content) {
     final m = post(channelId, username, content);
-    pushAll('message.created', m.toJson());
+    final ch = channels.firstWhere((c) => c.id == channelId);
+    pushAll('message.created', m.toJson(), ch.canView);
     return m;
+  }
+
+  /// Ends every session (and live connection) of a user, like a kick or ban.
+  void endUser(FakeUser u) {
+    for (final t in [
+      for (final e in tokens.entries)
+        if (e.value.id == u.id) e.key,
+    ]) {
+      endSession(t);
+    }
   }
 
   /// Logs a session out on the server: its live connections close with code 4001.
@@ -313,6 +379,15 @@ class FakeServer {
             'wrong username or password',
           );
         }
+        if (u.first.banned) {
+          return _error(
+            403,
+            'account_banned',
+            u.first.banReason.isEmpty
+                ? 'this account is banned'
+                : 'this account is banned: ${u.first.banReason}',
+          );
+        }
         return _session(u.first);
 
       case ('POST', '/api/v1/register'):
@@ -345,13 +420,78 @@ class FakeServer {
       );
     }
 
-    final channelPath = RegExp(r'^/api/v1/channels/(\d+)(/messages)?$')
-        .firstMatch(path);
+    final forbidden = _error(
+      403,
+      'forbidden',
+      'you do not have permission to do this',
+    );
+
+    final channelPath = RegExp(
+      r'^/api/v1/channels/(\d+)(/messages)?(?:/(\d+))?$',
+    ).firstMatch(path);
     final channelId = channelPath == null
         ? null
         : int.parse(channelPath.group(1)!);
-    final channel = channels.where((c) => c.id == channelId).firstOrNull;
+    // A channel you cannot see does not exist for you (404, like the server).
+    final channel = channels
+        .where((c) => c.id == channelId && c.canView(me))
+        .firstOrNull;
     final isMessages = channelPath?.group(2) != null;
+    final messageId = int.tryParse(channelPath?.group(3) ?? '');
+
+    // ---- members ----
+    if (path == '/api/v1/users' && r.method == 'GET') {
+      return _json(200, {
+        'users': [for (final u in users) u.memberJson(me)],
+      });
+    }
+    final userPath = RegExp(r'^/api/v1/users/(\d+)(/kick|/ban)?$')
+        .firstMatch(path);
+    if (userPath != null) {
+      final target = users
+          .where((u) => u.id == int.parse(userPath.group(1)!))
+          .firstOrNull;
+      if (target == null) return _error(404, 'not_found', 'user not found');
+      switch ((r.method, userPath.group(2))) {
+        case ('PATCH', null):
+          final role = Role.values
+              .where((x) => x.wire == body['role'])
+              .firstOrNull;
+          if (role == null || role == Role.owner) {
+            return _error(400, 'invalid_role', 'role: invalid');
+          }
+          if (!me.canActOn(Permission.manageRoles, target.role) ||
+              !me.role.above(role)) {
+            return forbidden;
+          }
+          target.role = role;
+          pushAll('member.updated', {..._info(target), 'role': role.wire});
+          return _json(200, {'user': target.memberJson(me)});
+        case ('POST', '/kick'):
+          if (!me.canActOn(Permission.kickMembers, target.role)) {
+            return forbidden;
+          }
+          endUser(target);
+          return http.Response('', 204);
+        case ('POST', '/ban'):
+          if (!me.canActOn(Permission.banMembers, target.role)) {
+            return forbidden;
+          }
+          target
+            ..banned = true
+            ..banReason = (body['reason'] as String? ?? '').trim();
+          endUser(target);
+          return http.Response('', 204);
+        case ('DELETE', '/ban'):
+          if (!me.canActOn(Permission.banMembers, target.role)) {
+            return forbidden;
+          }
+          target
+            ..banned = false
+            ..banReason = '';
+          return http.Response('', 204);
+      }
+    }
 
     switch ((r.method, path)) {
       case ('GET', '/api/v1/me'):
@@ -362,13 +502,7 @@ class FakeServer {
         return http.Response('', 204);
 
       case ('POST', '/api/v1/invites'):
-        if (!me.isOwner) {
-          return _error(
-            403,
-            'forbidden',
-            'you do not have permission to do this',
-          );
-        }
+        if (!me.can(Permission.manageInvites)) return forbidden;
         return _json(201, {
           'invite': {
             'id': 1,
@@ -384,18 +518,16 @@ class FakeServer {
       case ('GET', '/api/v1/channels'):
         return _json(200, {
           'channels': [
-            for (final c in channels) _channelJson(c, withPreview: true),
+            for (final c in channels)
+              if (c.canView(me)) _channelJson(c, withPreview: true),
           ],
         });
 
       case ('POST', '/api/v1/channels'):
-        if (!me.isOwner) {
-          return _error(
-            403,
-            'forbidden',
-            'you do not have permission to do this',
-          );
-        }
+        if (!me.can(Permission.manageChannels)) return forbidden;
+        final view = Role.parse(body['view_role'] as String? ?? 'member');
+        final send = Role.parse(body['send_role'] as String? ?? view.wire);
+        if (view.above(me.role) || send.above(me.role)) return forbidden;
         final name = (body['name'] as String).trim();
         if (name.isEmpty) {
           return _error(400, 'invalid_name', 'name: must be 1-32 characters');
@@ -411,9 +543,11 @@ class FakeServer {
           _nextChannelId++,
           name,
           (body['topic'] as String?) ?? '',
+          view,
+          send,
         );
         channels.add(c);
-        pushAll('channel.created', _channelJson(c));
+        pushAll('channel.created', _channelJson(c), c.canView);
         return _json(201, {'channel': _channelJson(c)});
     }
 
@@ -422,25 +556,61 @@ class FakeServer {
     }
 
     if (channel != null && !isMessages) {
-      if (!me.isOwner) {
-        return _error(
-          403,
-          'forbidden',
-          'you do not have permission to do this',
-        );
+      if (!me.can(Permission.manageChannels) ||
+          channel.sendRole.above(me.role)) {
+        return forbidden;
       }
       switch (r.method) {
         case 'PATCH':
+          final view = body['view_role'] is String
+              ? Role.parse(body['view_role'] as String)
+              : channel.viewRole;
+          var send = body['send_role'] is String
+              ? Role.parse(body['send_role'] as String)
+              : channel.sendRole;
+          if (body['send_role'] == null && !send.atLeast(view)) send = view;
+          if (view.above(me.role) || send.above(me.role)) return forbidden;
+          final before = channel.viewRole;
           if (body['name'] case final String n) channel.name = n.trim();
           if (body['topic'] case final String t) channel.topic = t.trim();
-          pushAll('channel.updated', _channelJson(channel));
+          channel
+            ..viewRole = view
+            ..sendRole = send;
+          pushAll('channel.updated', _channelJson(channel), channel.canView);
+          // Users who could see it before but not now: it is "deleted" for them.
+          pushAll('channel.deleted', {
+            'id': channel.id,
+          }, (u) => u.role.atLeast(before) && !channel.canView(u));
           return _json(200, {'channel': _channelJson(channel)});
         case 'DELETE':
           channels.remove(channel);
           messages.removeWhere((m) => m.channelId == channel.id);
-          pushAll('channel.deleted', {'id': channel.id});
+          pushAll('channel.deleted', {'id': channel.id}, channel.canView);
           return http.Response('', 204);
       }
+    }
+
+    if (channel != null && messageId != null && r.method == 'DELETE') {
+      final m = messages
+          .where((m) => m.id == messageId && m.channelId == channel.id)
+          .firstOrNull;
+      if (m == null || m.deleted) {
+        return _error(404, 'not_found', 'message not found');
+      }
+      // A deleted account counts as below everyone.
+      final authorRole = m.author?.role;
+      if (!me.can(Permission.deleteMessages) ||
+          (authorRole != null && !me.role.above(authorRole))) {
+        return forbidden;
+      }
+      m
+        ..deleted = true
+        ..content = '';
+      pushAll('message.deleted', {
+        'id': m.id,
+        'channel_id': channel.id,
+      }, channel.canView);
+      return http.Response('', 204);
     }
 
     if (channel != null && isMessages) {
@@ -468,8 +638,11 @@ class FakeServer {
               'retry-after': s,
             });
           }
+          if (!channel.canSend(me)) {
+            return _error(403, 'read_only', 'you cannot write in this channel');
+          }
           final m = post(channel.id, me.username, body['content'] as String);
-          pushAll('message.created', m.toJson());
+          pushAll('message.created', m.toJson(), channel.canView);
           return _json(201, {'message': m.toJson()});
       }
     }
@@ -477,13 +650,17 @@ class FakeServer {
   }
 
   Map<String, Object?> _channelJson(FakeChannel c, {bool withPreview = false}) {
-    final last = messages.where((m) => m.channelId == c.id).lastOrNull;
+    final last = messages
+        .where((m) => m.channelId == c.id && !m.deleted)
+        .lastOrNull;
     return {
       'id': c.id,
       'name': c.name,
       'topic': c.topic,
       'type': 'text',
       'position': channels.indexOf(c),
+      'view_role': c.viewRole.wire,
+      'send_role': c.sendRole.wire,
       'last_message': withPreview && last != null
           ? {
               'author_name': last.author?.displayName ?? '',

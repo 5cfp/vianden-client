@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'models.dart';
+import 'permissions.dart';
 
 /// The server answered with an error (see "Standard error format" in docs/API.md).
 class ApiException implements Exception {
@@ -131,26 +132,81 @@ class ApiClient {
     });
   }
 
-  Future<Channel> createChannel(String name, {String topic = ''}) async {
+  Future<Channel> createChannel(
+    String name, {
+    String topic = '',
+    Role viewRole = Role.member,
+    Role? sendRole, // null: the server uses viewRole
+  }) async {
     final json = await _send(
       'POST',
       '/api/v1/channels',
-      body: {'name': name, 'topic': topic},
+      body: {
+        'name': name,
+        'topic': topic,
+        'view_role': viewRole.wire,
+        'send_role': ?sendRole?.wire,
+      },
     );
     return _parse(() => _channel(json));
   }
 
-  /// Changes the name and/or topic. Only non-null values are sent.
-  Future<Channel> updateChannel(int id, {String? name, String? topic}) async {
+  /// Changes channel settings. Only non-null values are sent.
+  Future<Channel> updateChannel(
+    int id, {
+    String? name,
+    String? topic,
+    Role? viewRole,
+    Role? sendRole,
+  }) async {
     final json = await _send(
       'PATCH',
       '/api/v1/channels/$id',
-      body: {'name': ?name, 'topic': ?topic},
+      body: {
+        'name': ?name,
+        'topic': ?topic,
+        'view_role': ?viewRole?.wire,
+        'send_role': ?sendRole?.wire,
+      },
     );
     return _parse(() => _channel(json));
   }
 
   Future<void> deleteChannel(int id) => _send('DELETE', '/api/v1/channels/$id');
+
+  /// Deletes someone's message (moderators and up; the server checks).
+  Future<void> deleteMessage(int channelId, int messageId) =>
+      _send('DELETE', '/api/v1/channels/$channelId/messages/$messageId');
+
+  Future<List<Member>> listMembers() async {
+    final json = await _send('GET', '/api/v1/users');
+    return _parse(() {
+      if (json case {'users': List<Object?> list}) {
+        return [for (final m in list) Member.fromJson(m)];
+      }
+      throw const FormatException('unexpected member list');
+    });
+  }
+
+  Future<Member> setRole(int userId, Role role) async {
+    final json = await _send(
+      'PATCH',
+      '/api/v1/users/$userId',
+      body: {'role': role.wire},
+    );
+    return _parse(() {
+      if (json case {'user': Object m}) return Member.fromJson(m);
+      throw const FormatException('unexpected member response');
+    });
+  }
+
+  Future<void> kick(int userId) => _send('POST', '/api/v1/users/$userId/kick');
+
+  Future<void> ban(int userId, {String reason = ''}) =>
+      _send('POST', '/api/v1/users/$userId/ban', body: {'reason': reason});
+
+  Future<void> unban(int userId) =>
+      _send('DELETE', '/api/v1/users/$userId/ban');
 
   /// One page of history. [before]: id of the oldest message already loaded (null = newest page).
   Future<MessagePage> listMessages(

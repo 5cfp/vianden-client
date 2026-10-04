@@ -4,12 +4,15 @@
 /// if anything is missing or wrong: data from a server is never trusted blindly.
 library;
 
+import 'permissions.dart';
+
 class User {
   const User({
     required this.id,
     required this.username,
     required this.displayName,
-    required this.isOwner,
+    required this.role,
+    this.permissions = const {},
   });
 
   factory User.fromJson(Object? json) {
@@ -17,13 +20,23 @@ class User {
       'id': int id,
       'username': String username,
       'display_name': String displayName,
-      'is_owner': bool isOwner,
     }) {
+      final map = json as Map;
+      final perms = map['permissions'];
       return User(
         id: id,
         username: username,
         displayName: displayName,
-        isOwner: isOwner,
+        // Servers before roles only sent is_owner.
+        role: map['role'] is String
+            ? Role.parse(map['role'] as String)
+            : (map['is_owner'] == true ? Role.owner : Role.member),
+        permissions: perms is List
+            ? {
+                for (final p in perms)
+                  if (p is String) p,
+              }
+            : const {},
       );
     }
     throw const FormatException('unexpected user object');
@@ -32,7 +45,13 @@ class User {
   final int id;
   final String username;
   final String displayName;
-  final bool isOwner;
+  final Role role;
+
+  /// What this user may do (from the server). Only used to show or hide actions.
+  final Set<String> permissions;
+
+  bool get isOwner => role == Role.owner;
+  bool can(String permission) => permissions.contains(permission);
 }
 
 /// A logged-in user plus their session token (from register and login).
@@ -103,6 +122,8 @@ class Channel {
     required this.name,
     required this.topic,
     required this.position,
+    this.viewRole = Role.member,
+    this.sendRole = Role.member,
     this.lastMessage,
   });
 
@@ -119,6 +140,8 @@ class Channel {
         name: name,
         topic: topic,
         position: position,
+        viewRole: Role.parse((json)['view_role'] as String?),
+        sendRole: Role.parse((json)['send_role'] as String?),
         lastMessage: last == null ? null : MessagePreview.fromJson(last),
       );
     }
@@ -129,7 +152,15 @@ class Channel {
   final String name;
   final String topic;
   final int position;
+
+  /// Minimum role to see / to write in this channel.
+  final Role viewRole;
+  final Role sendRole;
   final MessagePreview? lastMessage;
+
+  bool canSend(Role r) => r.atLeast(viewRole) && r.atLeast(sendRole);
+  bool get isPrivate => viewRole != Role.member;
+  bool get isReadOnlyForMembers => sendRole != Role.member;
 }
 
 class MessagePreview {
@@ -190,6 +221,7 @@ class Message {
     required this.author,
     required this.content,
     required this.createdAt,
+    this.deleted = false,
   });
 
   factory Message.fromJson(Object? json) {
@@ -206,6 +238,7 @@ class Message {
         author: author == null ? null : Author.fromJson(author),
         content: content,
         createdAt: DateTime.parse(createdAt),
+        deleted: (json)['deleted'] == true,
       );
     }
     throw const FormatException('unexpected message object');
@@ -216,6 +249,18 @@ class Message {
   final Author? author;
   final String content;
   final DateTime createdAt;
+
+  /// Deleted by a moderator: show a placeholder ([content] is empty).
+  final bool deleted;
+
+  Message asDeleted() => Message(
+    id: id,
+    channelId: channelId,
+    author: author,
+    content: '',
+    createdAt: createdAt,
+    deleted: true,
+  );
 }
 
 /// One page of history: messages oldest first, and whether older ones exist.
@@ -223,4 +268,47 @@ class MessagePage {
   const MessagePage(this.messages, this.hasMore);
   final List<Message> messages;
   final bool hasMore;
+}
+
+/// A user in the member list. Ban details are only sent to users who may ban.
+class Member {
+  const Member({
+    required this.id,
+    required this.username,
+    required this.displayName,
+    required this.role,
+    this.banned,
+    this.banReason,
+  });
+
+  factory Member.fromJson(Object? json) {
+    if (json case {
+      'id': int id,
+      'username': String username,
+      'display_name': String displayName,
+      'role': String role,
+    }) {
+      final map = json as Map;
+      return Member(
+        id: id,
+        username: username,
+        displayName: displayName,
+        role: Role.parse(role),
+        banned: map['banned'] is bool ? map['banned'] as bool : null,
+        banReason: map['ban_reason'] is String
+            ? map['ban_reason'] as String
+            : null,
+      );
+    }
+    throw const FormatException('unexpected member object');
+  }
+
+  final int id;
+  final String username;
+  final String displayName;
+  final Role role;
+
+  /// null when the viewer may not see ban details.
+  final bool? banned;
+  final String? banReason;
 }

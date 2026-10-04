@@ -207,6 +207,22 @@ class SessionController extends AsyncNotifier<AppState> {
     state = AsyncData(LoggedOut(current.server, current.info));
   }
 
+  /// Reloads the logged-in user (after a role change): permissions and visible channels change.
+  Future<void> refreshMe() async {
+    final current = state.value;
+    if (current is! LoggedIn) return;
+    try {
+      final user = await _api(current.server, current.token).me();
+      if (state.value case final LoggedIn now when now.token == current.token) {
+        state = AsyncData(LoggedIn(now.server, now.info, user, now.token));
+      }
+    } on ApiException catch (e) {
+      if (e.isUnauthorized) await sessionExpired();
+    } on NetworkException {
+      // Try again on the next event or reconnect.
+    }
+  }
+
   /// An API client for the logged-in user (for screens that call the API).
   ApiClient authorizedApi() {
     final current = state.value;

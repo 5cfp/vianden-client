@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/permissions.dart';
 import '../../core/session_controller.dart';
 
 /// Runs an API call for the logged-in user. If the server says the session is no
@@ -68,19 +69,41 @@ class ChannelsController extends AsyncNotifier<List<Channel>> {
   }
 
   /// Owner only (the server checks). Returns the new room.
-  Future<Channel> create(String name, String topic) async {
+  Future<Channel> create(
+    String name,
+    String topic, {
+    Role viewRole = Role.member,
+    Role sendRole = Role.member,
+  }) async {
     final c = await _authorized(
       ref,
-      (api) => api.createChannel(name, topic: topic),
+      (api) => api.createChannel(
+        name,
+        topic: topic,
+        viewRole: viewRole,
+        sendRole: sendRole,
+      ),
     );
     await refresh();
     return c;
   }
 
-  Future<void> edit(int id, {String? name, String? topic}) async {
+  Future<void> edit(
+    int id, {
+    String? name,
+    String? topic,
+    Role? viewRole,
+    Role? sendRole,
+  }) async {
     await _authorized(
       ref,
-      (api) => api.updateChannel(id, name: name, topic: topic),
+      (api) => api.updateChannel(
+        id,
+        name: name,
+        topic: topic,
+        viewRole: viewRole,
+        sendRole: sendRole,
+      ),
     );
     await refresh();
   }
@@ -203,6 +226,28 @@ class MessagesController extends AsyncNotifier<MessagesState> {
     );
   }
 
+  /// Shows a message as deleted (a live event, or our own moderation action).
+  void markDeleted(int messageId) {
+    final current = state.value;
+    if (current == null) return;
+    state = AsyncData(
+      current.copyWith(
+        messages: [
+          for (final m in current.messages)
+            m.id == messageId ? m.asDeleted() : m,
+        ],
+      ),
+    );
+  }
+
+  /// Deletes someone's message (moderators; the server checks the hierarchy).
+  Future<void> delete(int messageId) async {
+    await _authorized(ref, (api) => api.deleteMessage(channelId, messageId));
+    if (!ref.mounted) return;
+    markDeleted(messageId);
+    ref.read(channelsProvider.notifier).refresh(); // the preview may change
+  }
+
   /// Adds a message that arrived live (ignored if we already have it).
   void addMessage(Message m) {
     final current = state.value;
@@ -234,5 +279,62 @@ class MessagesController extends AsyncNotifier<MessagesState> {
   static List<Message> _merge(List<Message> a, List<Message> b) {
     final byId = {for (final m in a) m.id: m, for (final m in b) m.id: m};
     return byId.values.toList()..sort((x, y) => x.id.compareTo(y.id));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Members (M5)
+// ---------------------------------------------------------------------------
+
+/// The member list, with roles (and ban details for users who may ban).
+final membersProvider =
+    AsyncNotifierProvider.autoDispose<MembersController, List<Member>>(
+      MembersController.new,
+    );
+
+class MembersController extends AsyncNotifier<List<Member>> {
+  @override
+  Future<List<Member>> build() => _authorized(ref, (api) => api.listMembers());
+
+  Future<void> refresh() async {
+    state = await AsyncValue.guard(
+      () => _authorized(ref, (api) => api.listMembers()),
+    );
+  }
+
+  Future<void> setRole(int userId, Role role) async {
+    await _authorized(ref, (api) => api.setRole(userId, role));
+    await refresh();
+  }
+
+  Future<void> kick(int userId) => _authorized(ref, (api) => api.kick(userId));
+
+  Future<void> ban(int userId, String reason) async {
+    await _authorized(ref, (api) => api.ban(userId, reason: reason));
+    await refresh();
+  }
+
+  Future<void> unban(int userId) async {
+    await _authorized(ref, (api) => api.unban(userId));
+    await refresh();
+  }
+
+  /// A live member.updated event: update that member's role in place.
+  void applyUpdate(Member updated) {
+    final list = state.value;
+    if (list == null) return;
+    state = AsyncData([
+      for (final m in list)
+        m.id == updated.id
+            ? Member(
+                id: m.id,
+                username: updated.username,
+                displayName: updated.displayName,
+                role: updated.role,
+                banned: m.banned,
+                banReason: m.banReason,
+              )
+            : m,
+    ]);
   }
 }

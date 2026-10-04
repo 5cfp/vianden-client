@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app_config/app_theme.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/permissions.dart';
 import '../../core/session_controller.dart';
 import 'chat_providers.dart';
 import 'composer.dart';
@@ -139,17 +140,23 @@ class _RoomPane extends ConsumerWidget {
                     ],
                   ),
                 ),
-                if (session.user.isOwner) _RoomMenu(room: room),
+                // Managers can edit rooms up to their own role (the server checks it too).
+                if (session.user.can(Permission.manageChannels) &&
+                    session.user.role.atLeast(room.sendRole))
+                  _RoomMenu(room: room, myRole: session.user.role),
               ],
             ),
           ),
           Divider(color: colors.otherBubbleBorder),
           const _ConnectionBanner(),
           Expanded(
-            child: MessageView(channelId: room.id, myUserId: session.user.id),
+            child: MessageView(channelId: room.id, me: session.user),
           ),
           _TypingLine(channelId: room.id),
-          Composer(channelId: room.id, roomName: room.name),
+          if (room.canSend(session.user.role))
+            Composer(channelId: room.id, roomName: room.name)
+          else
+            _ReadOnlyNotice(room: room),
         ],
       ),
     );
@@ -222,11 +229,12 @@ class _TypingLine extends ConsumerWidget {
   }
 }
 
-/// Owner tools for the open room: rename / change topic, delete.
+/// Room tools for managers: edit (name, topic, access), delete.
 class _RoomMenu extends ConsumerWidget {
-  const _RoomMenu({required this.room});
+  const _RoomMenu({required this.room, required this.myRole});
 
   final Channel room;
+  final Role myRole;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -243,10 +251,16 @@ class _RoomMenu extends ConsumerWidget {
               context,
               title: 'Edit room',
               actionLabel: 'Save',
-              initialName: room.name,
-              initialTopic: room.topic,
-              save: (name, topic) =>
-                  rooms.edit(room.id, name: name, topic: topic),
+              myRole: myRole,
+              initial: room,
+              // Access fields are sent only when changed.
+              save: (s) => rooms.edit(
+                room.id,
+                name: s.name,
+                topic: s.topic,
+                viewRole: s.viewRole == room.viewRole ? null : s.viewRole,
+                sendRole: s.sendRole == room.sendRole ? null : s.sendRole,
+              ),
             );
           case 'delete':
             if (!await confirmDeleteRoom(context, room)) return;
@@ -261,9 +275,39 @@ class _RoomMenu extends ConsumerWidget {
         }
       },
       itemBuilder: (_) => const [
-        PopupMenuItem(value: 'edit', child: Text('Rename or change topic')),
+        PopupMenuItem(value: 'edit', child: Text('Edit room')),
         PopupMenuItem(value: 'delete', child: Text('Delete room')),
       ],
+    );
+  }
+}
+
+/// Shown instead of the composer in rooms where this user may only read.
+class _ReadOnlyNotice extends StatelessWidget {
+  const _ReadOnlyNotice({required this.room});
+
+  final Channel room;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      key: const Key('read-only'),
+      padding: const EdgeInsets.fromLTRB(32, 8, 32, 20),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          'Only ${room.sendRole.label}s and up can write in this room.',
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.extension<ChatColors>()!.muted,
+          ),
+        ),
+      ),
     );
   }
 }

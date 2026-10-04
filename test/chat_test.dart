@@ -272,7 +272,7 @@ void main() {
       await pumpLoggedIn(tester, server, store, 'osama');
 
       await tapKey(tester, 'room-menu');
-      await tapText(tester, 'Rename or change topic');
+      await tapText(tester, 'Edit room');
       await type(tester, 'room-name', 'Lobby');
       await tapKey(tester, 'room-save');
 

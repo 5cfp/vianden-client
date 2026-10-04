@@ -4,11 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app_config/app_config.dart';
 import '../../app_config/app_theme.dart';
 import '../../core/models.dart';
+import '../../core/permissions.dart';
 import '../../core/session_controller.dart';
 import 'chat_providers.dart';
 import '../../widgets/about.dart';
 import '../../widgets/release_badge.dart';
 import 'dialogs.dart';
+import 'members_dialog.dart';
 import 'realtime_controller.dart';
 import 'time_format.dart';
 
@@ -27,7 +29,7 @@ class RoomList extends ConsumerWidget {
     final colors = theme.extension<ChatColors>()!;
     final rooms = ref.watch(channelsProvider);
     final selected = ref.watch(selectedChannelProvider);
-    final isOwner = session.user.isOwner;
+    final user = session.user;
 
     return ColoredBox(
       color: colors.roomList,
@@ -64,8 +66,8 @@ class RoomList extends ConsumerWidget {
                     ),
                   ),
                 ),
-                // Shown to the owner only; the server enforces the permission anyway.
-                if (isOwner)
+                // Shown only with the permission; the server enforces it anyway.
+                if (user.can(Permission.manageChannels))
                   IconButton(
                     key: const Key('new-room'),
                     tooltip: 'New room',
@@ -74,10 +76,16 @@ class RoomList extends ConsumerWidget {
                       context,
                       title: 'New room',
                       actionLabel: 'Create room',
-                      save: (name, topic) async {
+                      myRole: user.role,
+                      save: (s) async {
                         final room = await ref
                             .read(channelsProvider.notifier)
-                            .create(name, topic);
+                            .create(
+                              s.name,
+                              s.topic,
+                              viewRole: s.viewRole,
+                              sendRole: s.sendRole,
+                            );
                         ref
                             .read(selectedChannelProvider.notifier)
                             .select(room.id);
@@ -211,7 +219,7 @@ class _RoomTile extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Expanded(
+                  Flexible(
                     child: Text(
                       room.name,
                       style: theme.textTheme.titleSmall?.copyWith(
@@ -220,6 +228,36 @@ class _RoomTile extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  // Small hints for rooms with limited access.
+                  if (room.isPrivate)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: Tooltip(
+                        message:
+                            'Only ${room.viewRole.label}s and up can see this room',
+                        child: Icon(
+                          Icons.lock_outline,
+                          key: Key('room-private-${room.id}'),
+                          size: 14,
+                          color: colors.muted,
+                        ),
+                      ),
+                    )
+                  else if (room.isReadOnlyForMembers)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: Tooltip(
+                        message:
+                            'Only ${room.sendRole.label}s and up can write here',
+                        child: Icon(
+                          Icons.campaign_outlined,
+                          key: Key('room-readonly-${room.id}'),
+                          size: 14,
+                          color: colors.muted,
+                        ),
+                      ),
+                    ),
+                  const Spacer(),
                   if (last != null)
                     Text(
                       shortWhen(last.createdAt),
@@ -290,7 +328,9 @@ class _AccountBar extends ConsumerWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
-                  user.isOwner ? 'owner' : '@${user.username}',
+                  user.role == Role.member
+                      ? '@${user.username}'
+                      : user.role.label.toLowerCase(),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.muted,
                   ),
@@ -309,6 +349,8 @@ class _AccountBar extends ConsumerWidget {
                     context,
                     () => controller.authorizedApi().createInvite(),
                   );
+                case 'members':
+                  showMembersDialog(context, user);
                 case 'server':
                   controller.changeServer();
                 case 'logout':
@@ -318,11 +360,12 @@ class _AccountBar extends ConsumerWidget {
               }
             },
             itemBuilder: (_) => [
-              if (user.isOwner)
+              if (user.can(Permission.manageInvites))
                 const PopupMenuItem(
                   value: 'invite',
                   child: Text('Invite a friend'),
                 ),
+              const PopupMenuItem(value: 'members', child: Text('Members')),
               const PopupMenuItem(
                 value: 'server',
                 child: Text('Change server'),
