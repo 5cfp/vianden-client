@@ -95,3 +95,132 @@ class CreatedInvite {
   final Invite invite;
   final String code;
 }
+
+/// A text channel ("room"), with a preview of its newest message.
+class Channel {
+  const Channel({
+    required this.id,
+    required this.name,
+    required this.topic,
+    required this.position,
+    this.lastMessage,
+  });
+
+  factory Channel.fromJson(Object? json) {
+    if (json case {
+      'id': int id,
+      'name': String name,
+      'topic': String topic,
+      'position': int position,
+    }) {
+      final last = (json as Map)['last_message'];
+      return Channel(
+        id: id,
+        name: name,
+        topic: topic,
+        position: position,
+        lastMessage: last == null ? null : MessagePreview.fromJson(last),
+      );
+    }
+    throw const FormatException('unexpected channel object');
+  }
+
+  final int id;
+  final String name;
+  final String topic;
+  final int position;
+  final MessagePreview? lastMessage;
+}
+
+class MessagePreview {
+  const MessagePreview({
+    required this.authorName,
+    required this.content,
+    required this.createdAt,
+  });
+
+  factory MessagePreview.fromJson(Object? json) {
+    if (json case {
+      'author_name': String authorName,
+      'content': String content,
+      'created_at': String createdAt,
+    }) {
+      return MessagePreview(
+        authorName: authorName,
+        content: content,
+        createdAt: DateTime.parse(createdAt),
+      );
+    }
+    throw const FormatException('unexpected message preview');
+  }
+
+  final String authorName;
+  final String content;
+  final DateTime createdAt;
+}
+
+/// Who sent a message. Null on a message means the account was deleted.
+class Author {
+  const Author({
+    required this.id,
+    required this.username,
+    required this.displayName,
+  });
+
+  factory Author.fromJson(Object? json) {
+    if (json case {
+      'id': int id,
+      'username': String username,
+      'display_name': String displayName,
+    }) {
+      return Author(id: id, username: username, displayName: displayName);
+    }
+    throw const FormatException('unexpected author object');
+  }
+
+  final int id;
+  final String username;
+  final String displayName;
+}
+
+class Message {
+  const Message({
+    required this.id,
+    required this.channelId,
+    required this.author,
+    required this.content,
+    required this.createdAt,
+  });
+
+  factory Message.fromJson(Object? json) {
+    if (json case {
+      'id': int id,
+      'channel_id': int channelId,
+      'content': String content,
+      'created_at': String createdAt,
+    }) {
+      final author = (json as Map)['author'];
+      return Message(
+        id: id,
+        channelId: channelId,
+        author: author == null ? null : Author.fromJson(author),
+        content: content,
+        createdAt: DateTime.parse(createdAt),
+      );
+    }
+    throw const FormatException('unexpected message object');
+  }
+
+  final int id;
+  final int channelId;
+  final Author? author;
+  final String content;
+  final DateTime createdAt;
+}
+
+/// One page of history: messages oldest first, and whether older ones exist.
+class MessagePage {
+  const MessagePage(this.messages, this.hasMore);
+  final List<Message> messages;
+  final bool hasMore;
+}

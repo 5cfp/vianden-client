@@ -5,9 +5,9 @@ import 'app_config/app_config.dart';
 import 'app_config/app_theme.dart';
 import 'core/session_controller.dart';
 import 'features/auth/auth_screen.dart';
+import 'features/chat/chat_screen.dart';
 import 'features/connect/connect_screen.dart';
 import 'features/connect/server_problem_screen.dart';
-import 'features/home/home_screen.dart';
 
 void main() {
   // ProviderScope holds the state of all Riverpod providers for the whole app.
@@ -41,7 +41,7 @@ class AppRoot extends ConsumerWidget {
       AsyncData(value: final app) => switch (app) {
         NeedsServer() => const ConnectScreen(),
         LoggedOut(:final info) => AuthScreen(serverName: info.name),
-        LoggedIn() => HomeScreen(session: app),
+        LoggedIn() => ChatScreen(session: app),
         ServerProblem() => ServerProblemScreen(problem: app),
       },
       AsyncError(:final error) => Scaffold(

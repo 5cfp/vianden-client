@@ -19,7 +19,8 @@ flutter run -d windows
 2. Run the client: `flutter run -d windows`
 3. Enter `http://127.0.0.1:8080` and press **Connect**.
 4. **First account (owner):** choose **Register** and use the setup token (`vo_...`) printed in the server console as the invite code.
-5. As the owner, use **Create invite code** and give the code to a friend; they register with it.
+5. As the owner, open the **⋯** menu (bottom left) › **Invite a friend** and give the code to a friend; they register with it.
+6. Chat in **General**. The owner can add rooms with **+** and rename or delete them with the **⋮** menu. New messages from others appear when you press **Refresh** (live updates come in M3). Enter sends; Shift+Enter adds a line.
 
 The app remembers the server and your login (the session token is stored encrypted with the OS secure storage; on Windows via DPAPI). **Log out** ends the session on the server too.
 
@@ -44,7 +45,7 @@ If `very_good` is not found, add `%LOCALAPPDATA%\Pub\Cache\bin` to your PATH.
 | `lib/app_config/` | **All** branding and theme values (app name, colors, default server). Widgets never hardcode these. |
 | `lib/core/` | Code shared by all features: API client, data models, session state (Riverpod), secure storage |
 | `lib/widgets/` | Small reusable widgets |
-| `lib/features/` | One folder per screen/feature: `connect/`, `auth/` (login + register), `home/` |
+| `lib/features/` | One folder per screen/feature: `connect/`, `auth/` (login + register), `chat/` (rooms, messages, composer, owner room tools) |
 | `test/` | Tests, mirroring `lib/` |
 
 ## License

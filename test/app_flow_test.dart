@@ -4,9 +4,15 @@ import 'package:vianden_client/app_config/app_config.dart';
 import 'package:vianden_client/features/auth/auth_screen.dart';
 import 'package:vianden_client/features/connect/connect_screen.dart';
 import 'package:vianden_client/features/connect/server_problem_screen.dart';
-import 'package:vianden_client/features/home/home_screen.dart';
+import 'package:vianden_client/features/chat/chat_screen.dart';
 
 import 'helpers.dart';
+
+/// Checks that the chat screen is shown for the user with this display name.
+void expectChatAs(WidgetTester tester, String displayName) {
+  expect(find.byType(ChatScreen), findsOneWidget);
+  expect(find.text(displayName), findsWidgets);
+}
 
 void main() {
   late FakeServer server;
@@ -72,8 +78,8 @@ void main() {
       await startAtLogin(tester);
       await logIn(tester, 'Osama', 'owner-pass-1');
 
-      expect(find.byType(HomeScreen), findsOneWidget);
-      expect(find.text('Welcome, Osama!'), findsOneWidget);
+      expect(find.byType(ChatScreen), findsOneWidget);
+      expectChatAs(tester, 'Osama');
       expect(store.token, isNotNull);
       expect(
         server.tokens[store.token],
@@ -113,7 +119,7 @@ void main() {
       await type(tester, 'invite-code', '  vi_good  ');
       await tapKey(tester, 'submit');
 
-      expect(find.text('Welcome, New Friend!'), findsOneWidget);
+      expectChatAs(tester, 'New Friend');
       expect(store.token, isNotNull);
     });
 
@@ -148,7 +154,7 @@ void main() {
         ..token = server.sessionFor('friend');
       await pumpApp(tester, server, store);
 
-      expect(find.text('Welcome, Friend!'), findsOneWidget);
+      expectChatAs(tester, 'Friend');
       final me = server.called('GET', '/api/v1/me').single;
       expect(me.headers['Authorization'], 'Bearer ${store.token}');
     });
@@ -181,7 +187,7 @@ void main() {
 
       server.down = false;
       await tapKey(tester, 'retry');
-      expect(find.text('Welcome, Friend!'), findsOneWidget);
+      expectChatAs(tester, 'Friend');
     });
 
     testWidgets('an incompatible server version is reported', (tester) async {
@@ -204,7 +210,7 @@ void main() {
           ..token = token;
         await pumpApp(tester, server, store);
 
-        await tapKey(tester, 'logout');
+        await accountMenu(tester, 'Log out');
 
         expect(find.byType(AuthScreen), findsOneWidget);
         expect(store.token, isNull);
@@ -227,19 +233,21 @@ void main() {
         ..token = server.sessionFor('osama');
       await pumpApp(tester, server, store);
 
-      await tapKey(tester, 'create-invite');
+      await accountMenu(tester, 'Invite a friend');
 
       expect(find.text('vi_brand_new_code'), findsOneWidget);
       expect(find.textContaining('shown only once'), findsOneWidget);
     });
 
-    testWidgets('a member does not see the invite button', (tester) async {
+    testWidgets('a member does not see the invite menu entry', (tester) async {
       store
         ..server = serverUrl
         ..token = server.sessionFor('friend');
       await pumpApp(tester, server, store);
 
-      expect(find.byKey(const Key('create-invite')), findsNothing);
+      await tapKey(tester, 'account-menu');
+      expect(find.text('Invite a friend'), findsNothing);
+      expect(find.text('Log out'), findsOneWidget);
     });
 
     testWidgets(
@@ -252,7 +260,7 @@ void main() {
         await pumpApp(tester, server, store);
 
         server.tokens.remove(token); // e.g. logged out from another device
-        await tapKey(tester, 'create-invite');
+        await tapKey(tester, 'refresh');
 
         expect(find.byType(AuthScreen), findsOneWidget);
         expect(store.token, isNull);

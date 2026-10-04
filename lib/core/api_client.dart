@@ -121,9 +121,87 @@ class ApiClient {
     return _parse(() => CreatedInvite.fromJson(json));
   }
 
+  Future<List<Channel>> listChannels() async {
+    final json = await _send('GET', '/api/v1/channels');
+    return _parse(() {
+      if (json case {'channels': List<Object?> list}) {
+        return [for (final c in list) Channel.fromJson(c)];
+      }
+      throw const FormatException('unexpected channel list');
+    });
+  }
+
+  Future<Channel> createChannel(String name, {String topic = ''}) async {
+    final json = await _send(
+      'POST',
+      '/api/v1/channels',
+      body: {'name': name, 'topic': topic},
+    );
+    return _parse(() => _channel(json));
+  }
+
+  /// Changes the name and/or topic. Only non-null values are sent.
+  Future<Channel> updateChannel(int id, {String? name, String? topic}) async {
+    final json = await _send(
+      'PATCH',
+      '/api/v1/channels/$id',
+      body: {'name': ?name, 'topic': ?topic},
+    );
+    return _parse(() => _channel(json));
+  }
+
+  Future<void> deleteChannel(int id) => _send('DELETE', '/api/v1/channels/$id');
+
+  /// One page of history. [before]: id of the oldest message already loaded (null = newest page).
+  Future<MessagePage> listMessages(
+    int channelId, {
+    int? before,
+    int limit = 50,
+  }) async {
+    final json = await _send(
+      'GET',
+      '/api/v1/channels/$channelId/messages',
+      query: {'limit': '$limit', 'before': ?before?.toString()},
+    );
+    return _parse(() {
+      if (json case {
+        'messages': List<Object?> list,
+        'has_more': bool hasMore,
+      }) {
+        return MessagePage([
+          for (final m in list) Message.fromJson(m),
+        ], hasMore);
+      }
+      throw const FormatException('unexpected message page');
+    });
+  }
+
+  Future<Message> sendMessage(int channelId, String content) async {
+    final json = await _send(
+      'POST',
+      '/api/v1/channels/$channelId/messages',
+      body: {'content': content},
+    );
+    return _parse(() {
+      if (json case {'message': Object m}) return Message.fromJson(m);
+      throw const FormatException('unexpected message response');
+    });
+  }
+
+  static Channel _channel(Object? json) {
+    if (json case {'channel': Object c}) return Channel.fromJson(c);
+    throw const FormatException('unexpected channel response');
+  }
+
   /// Sends a request and returns the decoded JSON body (null for 204 No Content).
-  Future<Object?> _send(String method, String path, {Object? body}) async {
-    final request = http.Request(method, server.replace(path: path));
+  Future<Object?> _send(
+    String method,
+    String path, {
+    Object? body,
+    Map<String, String>? query,
+  }) async {
+    final url = server.replace(path: path, queryParameters: query);
+    final request = http.Request(method, url);
     request.headers['Accept'] = 'application/json';
     if (token case final t?) {
       request.headers['Authorization'] = 'Bearer $t';

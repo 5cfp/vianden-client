@@ -1,8 +1,9 @@
 /// The ONE place for branding and app-wide settings.
 ///
 /// Widgets must read the app name, logo, colors, and default server address
-/// from here, never from their own literals. In M10 these values will come from
-/// a branding file (build time) and from the server (runtime).
+/// from here (or from the theme built from it), never from their own literals.
+/// In M10 these values will come from a branding file (build time) and from
+/// the server (runtime).
 library;
 
 import 'package:flutter/material.dart';
@@ -15,7 +16,6 @@ abstract final class AppConfig {
   /// Empty in the official client; a branded build can preset it.
   static const defaultServerAddress = '';
 
-  /// Main brand color. The whole color scheme is generated from it.
-  /// Placeholder until the design direction is chosen in M2.
-  static const seedColor = Color(0xFF3D5AFE);
+  /// Brand accent: buttons, selection marks, unread counts. White text must be readable on it.
+  static const accentColor = Color(0xFFB8441A); // burnt orange (design C2)
 }
