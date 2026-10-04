@@ -135,6 +135,15 @@ class FakeMessage {
   String content;
   final DateTime createdAt;
   bool deleted = false;
+  DateTime? editedAt;
+
+  /// The message this one replies to (the quote is built from its CURRENT state,
+  /// like the real server's query does).
+  FakeMessage? replyTo;
+
+  static Map<String, Object?>? _author(FakeUser? u) => u == null
+      ? null
+      : {'id': u.id, 'username': u.username, 'display_name': u.displayName};
 
   Map<String, Object?> toJson() => {
     'id': id,
@@ -149,6 +158,18 @@ class FakeMessage {
     'content': content,
     'deleted': deleted,
     'created_at': createdAt.toUtc().toIso8601String(),
+    'edited_at': editedAt?.toUtc().toIso8601String(),
+    'reply_to': switch (replyTo) {
+      null => null,
+      final r => {
+        'id': r.id,
+        'author': _author(r.author),
+        'content': r.content.runes.length > 100
+            ? '${String.fromCharCodes(r.content.runes.take(100))}…'
+            : r.content,
+        'deleted': r.deleted,
+      },
+    },
   };
 }
 
@@ -267,6 +288,7 @@ class FakeServer {
     String username,
     String content, {
     DateTime? at,
+    FakeMessage? replyTo,
   }) {
     final m = FakeMessage(
       _nextMessageId++,
@@ -274,7 +296,7 @@ class FakeServer {
       user(username),
       content,
       at ?? DateTime.now(),
-    );
+    )..replyTo = replyTo;
     messages.add(m);
     return m;
   }
@@ -590,6 +612,24 @@ class FakeServer {
       }
     }
 
+    if (channel != null && messageId != null && r.method == 'PATCH') {
+      final m = messages
+          .where((m) => m.id == messageId && m.channelId == channel.id)
+          .firstOrNull;
+      if (m == null || m.deleted) {
+        return _error(404, 'not_found', 'message not found');
+      }
+      if (!channel.canSend(me)) {
+        return _error(403, 'read_only', 'you cannot write in this channel');
+      }
+      if (m.author?.id != me.id) return forbidden;
+      m
+        ..content = body['content'] as String
+        ..editedAt = DateTime.now();
+      pushAll('message.updated', m.toJson(), channel.canView);
+      return _json(200, {'message': m.toJson()});
+    }
+
     if (channel != null && messageId != null && r.method == 'DELETE') {
       final m = messages
           .where((m) => m.id == messageId && m.channelId == channel.id)
@@ -597,10 +637,13 @@ class FakeServer {
       if (m == null || m.deleted) {
         return _error(404, 'not_found', 'message not found');
       }
-      // A deleted account counts as below everyone.
+      // Your own: always. Someone else's: permission + below you
+      // (a deleted account counts as below everyone).
+      final own = m.author?.id == me.id;
       final authorRole = m.author?.role;
-      if (!me.can(Permission.deleteMessages) ||
-          (authorRole != null && !me.role.above(authorRole))) {
+      if (!own &&
+          (!me.can(Permission.deleteMessages) ||
+              (authorRole != null && !me.role.above(authorRole)))) {
         return forbidden;
       }
       m
@@ -641,7 +684,26 @@ class FakeServer {
           if (!channel.canSend(me)) {
             return _error(403, 'read_only', 'you cannot write in this channel');
           }
-          final m = post(channel.id, me.username, body['content'] as String);
+          FakeMessage? replyTo;
+          if (body['reply_to'] case final int id) {
+            replyTo = messages
+                .where((x) => x.id == id && x.channelId == channel.id)
+                .where((x) => !x.deleted)
+                .firstOrNull;
+            if (replyTo == null) {
+              return _error(
+                400,
+                'invalid_reply_to',
+                'reply_to: no such message in this channel',
+              );
+            }
+          }
+          final m = post(
+            channel.id,
+            me.username,
+            body['content'] as String,
+            replyTo: replyTo,
+          );
           pushAll('message.created', m.toJson(), channel.canView);
           return _json(201, {'message': m.toJson()});
       }

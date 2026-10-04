@@ -150,7 +150,11 @@ class _RoomPane extends ConsumerWidget {
           Divider(color: colors.otherBubbleBorder),
           const _ConnectionBanner(),
           Expanded(
-            child: MessageView(channelId: room.id, me: session.user),
+            child: MessageView(
+              channelId: room.id,
+              me: session.user,
+              canWrite: room.canSend(session.user.role),
+            ),
           ),
           _TypingLine(channelId: room.id),
           if (room.canSend(session.user.role))

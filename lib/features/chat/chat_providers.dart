@@ -226,21 +226,42 @@ class MessagesController extends AsyncNotifier<MessagesState> {
     );
   }
 
-  /// Shows a message as deleted (a live event, or our own moderation action).
+  /// Shows a message as deleted (a live event, or our own action). Replies that
+  /// quote it now say "Original message deleted".
   void markDeleted(int messageId) {
+    final m = state.value?.messages.where((m) => m.id == messageId).firstOrNull;
+    if (m != null) applyUpdate(m.asDeleted());
+  }
+
+  /// Replaces a message with a newer version (edited or deleted), and refreshes the
+  /// quotes of replies to it. Ignored if we do not have it loaded.
+  void applyUpdate(Message updated) {
     final current = state.value;
-    if (current == null) return;
+    if (current == null || !current.messages.any((m) => m.id == updated.id)) {
+      return;
+    }
     state = AsyncData(
       current.copyWith(
         messages: [
           for (final m in current.messages)
-            m.id == messageId ? m.asDeleted() : m,
+            m.id == updated.id ? updated : m.withQuoteOf(updated),
         ],
       ),
     );
   }
 
-  /// Deletes someone's message (moderators; the server checks the hierarchy).
+  /// Changes the text of one of our own messages.
+  Future<void> edit(int messageId, String content) async {
+    final edited = await _authorized(
+      ref,
+      (api) => api.editMessage(channelId, messageId, content),
+    );
+    if (!ref.mounted) return;
+    applyUpdate(edited);
+    ref.read(channelsProvider.notifier).refresh(); // the preview may change
+  }
+
+  /// Deletes a message: our own, or someone's as a moderator (the server checks).
   Future<void> delete(int messageId) async {
     await _authorized(ref, (api) => api.deleteMessage(channelId, messageId));
     if (!ref.mounted) return;
@@ -258,10 +279,10 @@ class MessagesController extends AsyncNotifier<MessagesState> {
   }
 
   /// Sends a message and shows it right away. Throws on failure so the composer can keep the text.
-  Future<void> send(String content) async {
+  Future<void> send(String content, {int? replyTo}) async {
     final sent = await _authorized(
       ref,
-      (api) => api.sendMessage(channelId, content),
+      (api) => api.sendMessage(channelId, content, replyTo: replyTo),
     );
     if (!ref.mounted) return;
     final current = state.value;
@@ -280,6 +301,49 @@ class MessagesController extends AsyncNotifier<MessagesState> {
     final byId = {for (final m in a) m.id: m, for (final m in b) m.id: m};
     return byId.values.toList()..sort((x, y) => x.id.compareTo(y.id));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Composer mode: replying to or editing a message (M6)
+// ---------------------------------------------------------------------------
+
+/// What the composer of a room is doing besides writing a new message.
+/// `sealed`: these are all the possible modes (see the AppState comment).
+sealed class ComposerMode {
+  const ComposerMode();
+}
+
+class Writing extends ComposerMode {
+  const Writing();
+}
+
+class ReplyingTo extends ComposerMode {
+  const ReplyingTo(this.message);
+  final Message message;
+}
+
+class Editing extends ComposerMode {
+  const Editing(this.message);
+  final Message message;
+}
+
+/// Per room: `ref.watch(composerModeProvider(channelId))`.
+final composerModeProvider = NotifierProvider.autoDispose
+    .family<ComposerModeController, ComposerMode, int>(
+      ComposerModeController.new,
+    );
+
+class ComposerModeController extends Notifier<ComposerMode> {
+  ComposerModeController(this.channelId);
+
+  final int channelId;
+
+  @override
+  ComposerMode build() => const Writing();
+
+  void replyTo(Message m) => state = ReplyingTo(m);
+  void edit(Message m) => state = Editing(m);
+  void cancel() => state = const Writing();
 }
 
 // ---------------------------------------------------------------------------

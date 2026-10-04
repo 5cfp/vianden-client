@@ -236,6 +236,12 @@ class RealtimeController extends Notifier<RealtimeState> {
             ref.read(messagesProvider(m.channelId).notifier).addMessage(m);
           }
           if (m.author case final a?) _stopTyping(m.channelId, a.id);
+        case 'message.updated':
+          final m = Message.fromJson(data);
+          if (ref.exists(messagesProvider(m.channelId))) {
+            ref.read(messagesProvider(m.channelId).notifier).applyUpdate(m);
+          }
+          ref.read(channelsProvider.notifier).refresh(); // preview may change
         case 'message.deleted':
           if (data case {'id': int id, 'channel_id': int channelId}) {
             if (ref.exists(messagesProvider(channelId))) {

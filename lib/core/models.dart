@@ -214,6 +214,45 @@ class Author {
   final String displayName;
 }
 
+/// The short quote shown above a reply (the message it answers).
+class ReplyQuote {
+  const ReplyQuote({
+    required this.id,
+    required this.author,
+    required this.content,
+    this.deleted = false,
+  });
+
+  factory ReplyQuote.fromJson(Object? json) {
+    if (json case {'id': int id, 'content': String content}) {
+      final author = (json as Map)['author'];
+      return ReplyQuote(
+        id: id,
+        author: author == null ? null : Author.fromJson(author),
+        content: content,
+        deleted: json['deleted'] == true,
+      );
+    }
+    throw const FormatException('unexpected reply_to object');
+  }
+
+  /// A quote of [m], shortened like the server does (100 characters + "…").
+  factory ReplyQuote.of(Message m) => ReplyQuote(
+    id: m.id,
+    author: m.author,
+    // Counted in code points ("runes"), exactly like the server's Go code.
+    content: m.content.runes.length > 100
+        ? '${String.fromCharCodes(m.content.runes.take(100))}…'
+        : m.content,
+    deleted: m.deleted,
+  );
+
+  final int id;
+  final Author? author;
+  final String content;
+  final bool deleted;
+}
+
 class Message {
   const Message({
     required this.id,
@@ -222,6 +261,8 @@ class Message {
     required this.content,
     required this.createdAt,
     this.deleted = false,
+    this.editedAt,
+    this.replyTo,
   });
 
   factory Message.fromJson(Object? json) {
@@ -231,14 +272,19 @@ class Message {
       'content': String content,
       'created_at': String createdAt,
     }) {
-      final author = (json as Map)['author'];
+      final map = json as Map;
+      final author = map['author'];
+      final edited = map['edited_at'];
+      final reply = map['reply_to'];
       return Message(
         id: id,
         channelId: channelId,
         author: author == null ? null : Author.fromJson(author),
         content: content,
         createdAt: DateTime.parse(createdAt),
-        deleted: (json)['deleted'] == true,
+        deleted: map['deleted'] == true,
+        editedAt: edited is String ? DateTime.parse(edited) : null,
+        replyTo: reply == null ? null : ReplyQuote.fromJson(reply),
       );
     }
     throw const FormatException('unexpected message object');
@@ -250,17 +296,38 @@ class Message {
   final String content;
   final DateTime createdAt;
 
-  /// Deleted by a moderator: show a placeholder ([content] is empty).
+  /// Deleted by its author or a moderator: show a placeholder ([content] is empty).
   final bool deleted;
 
-  Message asDeleted() => Message(
+  /// When the author last edited it; null if never.
+  final DateTime? editedAt;
+
+  /// The message this one answers; null if it is not a reply.
+  final ReplyQuote? replyTo;
+
+  Message _copy({
+    String? content,
+    bool? deleted,
+    DateTime? editedAt,
+    ReplyQuote? replyTo,
+  }) => Message(
     id: id,
     channelId: channelId,
     author: author,
-    content: '',
+    content: content ?? this.content,
     createdAt: createdAt,
-    deleted: true,
+    deleted: deleted ?? this.deleted,
+    editedAt: editedAt ?? this.editedAt,
+    replyTo: replyTo ?? this.replyTo,
   );
+
+  Message asDeleted() => _copy(content: '', deleted: true);
+
+  /// If this is a reply to [original], returns a copy whose quote shows its new state
+  /// (edited text or deleted); otherwise returns this message unchanged.
+  Message withQuoteOf(Message original) => replyTo?.id == original.id
+      ? _copy(replyTo: ReplyQuote.of(original))
+      : this;
 }
 
 /// One page of history: messages oldest first, and whether older ones exist.

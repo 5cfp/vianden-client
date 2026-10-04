@@ -232,17 +232,38 @@ class ApiClient {
     });
   }
 
-  Future<Message> sendMessage(int channelId, String content) async {
+  /// Sends a message; [replyTo] is the id of the message it answers (same room).
+  Future<Message> sendMessage(
+    int channelId,
+    String content, {
+    int? replyTo,
+  }) async {
     final json = await _send(
       'POST',
       '/api/v1/channels/$channelId/messages',
+      body: {'content': content, 'reply_to': ?replyTo},
+    );
+    return _message(json);
+  }
+
+  /// Changes the text of one of your own messages.
+  Future<Message> editMessage(
+    int channelId,
+    int messageId,
+    String content,
+  ) async {
+    final json = await _send(
+      'PATCH',
+      '/api/v1/channels/$channelId/messages/$messageId',
       body: {'content': content},
     );
-    return _parse(() {
-      if (json case {'message': Object m}) return Message.fromJson(m);
-      throw const FormatException('unexpected message response');
-    });
+    return _message(json);
   }
+
+  Message _message(Object? json) => _parse(() {
+    if (json case {'message': Object m}) return Message.fromJson(m);
+    throw const FormatException('unexpected message response');
+  });
 
   static Channel _channel(Object? json) {
     if (json case {'channel': Object c}) return Channel.fromJson(c);

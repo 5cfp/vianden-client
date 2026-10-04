@@ -210,9 +210,7 @@ void main() {
       expect(find.text('This account is banned: spam'), findsOneWidget);
     });
 
-    testWidgets('moderator can kick a member but not an admin', (
-      tester,
-    ) async {
+    testWidgets('moderator can kick a member but not an admin', (tester) async {
       server.users.addAll([
         FakeUser(3, 'mod', 'Mod', 'mod-pass-1', role: Role.moderator),
         FakeUser(4, 'adm', 'Adm', 'adm-pass-1', role: Role.admin),

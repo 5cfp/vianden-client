@@ -11,12 +11,20 @@ import 'time_format.dart';
 
 /// The scrolling message history of one room. Newest at the bottom; scrolling up loads older pages.
 class MessageView extends ConsumerStatefulWidget {
-  const MessageView({super.key, required this.channelId, required this.me});
+  const MessageView({
+    super.key,
+    required this.channelId,
+    required this.me,
+    required this.canWrite,
+  });
 
   final int channelId;
 
   /// The logged-in user: for "mine" and for the moderation actions.
   final User me;
+
+  /// Whether the user may write in this room (reply and edit need it).
+  final bool canWrite;
 
   @override
   ConsumerState<MessageView> createState() => _MessageViewState();
@@ -24,6 +32,14 @@ class MessageView extends ConsumerStatefulWidget {
 
 class _MessageViewState extends ConsumerState<MessageView> {
   final _scroll = ScrollController();
+
+  /// One key per message, so we can find a message's widget to scroll to it.
+  final _keys = <int, GlobalKey>{};
+
+  /// The message we just jumped to (it lights up briefly); the counter restarts the
+  /// animation when jumping to the same message twice.
+  int? _highlightId;
+  int _highlightCount = 0;
 
   @override
   void initState() {
@@ -37,17 +53,60 @@ class _MessageViewState extends ConsumerState<MessageView> {
     super.dispose();
   }
 
+  MessagesController get _messages =>
+      ref.read(messagesProvider(widget.channelId).notifier);
+
   /// The list is "reversed" (offset 0 = the bottom), so the TOP is maxScrollExtent.
   void _onScroll() {
     if (_scroll.position.pixels > _scroll.position.maxScrollExtent - 300) {
-      ref.read(messagesProvider(widget.channelId).notifier).loadOlder();
+      _messages.loadOlder();
     }
+  }
+
+  /// Scrolls to the message a reply quotes. The list only builds the messages near the
+  /// screen, so we scroll up step by step until the original's widget exists (scrolling
+  /// up also loads older pages), then center it and light it up.
+  Future<void> _jumpTo(int id) async {
+    for (var step = 0; step < 100 && mounted; step++) {
+      final target = _keys[id]?.currentContext;
+      if (target != null && target.mounted) {
+        await Scrollable.ensureVisible(
+          target,
+          alignment: 0.5,
+          duration: const Duration(milliseconds: 250),
+        );
+        if (mounted) {
+          setState(() {
+            _highlightId = id;
+            _highlightCount++;
+          });
+        }
+        return;
+      }
+      final s = ref.read(messagesProvider(widget.channelId)).value;
+      if (s == null || !_scroll.hasClients) return;
+      final pos = _scroll.position;
+      final atTop = pos.pixels >= pos.maxScrollExtent;
+      if (atTop && !s.hasMore) break; // whole history loaded: it is gone
+      if (atTop) {
+        await _messages.loadOlder(); // the next page makes room to scroll
+      } else {
+        _scroll.jumpTo(
+          (pos.pixels + pos.viewportDimension * 0.8).clamp(
+            0,
+            pos.maxScrollExtent,
+          ),
+        );
+      }
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    _showError('Could not find the original message.');
   }
 
   Future<void> _delete(Message m) async {
     if (!await confirmDeleteMessage(context, m)) return;
     try {
-      await ref.read(messagesProvider(widget.channelId).notifier).delete(m.id);
+      await _messages.delete(m.id);
     } on ApiException catch (e) {
       _showError(e.message);
     } on NetworkException catch (e) {
@@ -90,11 +149,12 @@ class _MessageViewState extends ConsumerState<MessageView> {
     final colors = theme.extension<ChatColors>()!;
     final messages = s.messages;
     final me = widget.me;
+    final mode = ref.read(composerModeProvider(widget.channelId).notifier);
 
     // Moderators can delete messages of members BELOW their role. The member list
     // tells us each author's role (only loaded for users who can delete at all).
-    final canDeleteAny = me.can(Permission.deleteMessages);
-    final roles = canDeleteAny
+    final canModerate = me.can(Permission.deleteMessages);
+    final roles = canModerate
         ? {
             for (final m
                 in ref.watch(membersProvider).value ?? const <Member>[])
@@ -102,10 +162,11 @@ class _MessageViewState extends ConsumerState<MessageView> {
           }
         : const <int, Role>{};
     bool canDelete(Message m) {
-      if (!canDeleteAny || m.deleted) return false;
+      if (m.deleted) return false;
       final author = m.author;
+      if (author?.id == me.id) return true; // your own: always
+      if (!canModerate) return false;
       if (author == null) return true; // deleted account: below everyone
-      if (author.id == me.id) return false;
       // Unknown role (list still loading): show it; the server decides anyway.
       final role = roles[author.id];
       return role == null || me.role.above(role);
@@ -160,28 +221,45 @@ class _MessageViewState extends ConsumerState<MessageView> {
             final index = messages.length - 1 - i;
             final m = messages[index];
             final prev = index > 0 ? messages[index - 1] : null;
+            final mine = m.author?.id == me.id;
+            final live = !m.deleted;
 
             final newDay =
                 prev == null || !sameDay(prev.createdAt, m.createdAt);
-            // Consecutive messages from the same person within 5 minutes share one name line.
+            // Consecutive messages from the same person within 5 minutes share one
+            // name line. A reply always gets its own (its quote sits above it).
             final grouped =
                 !newDay &&
+                m.replyTo == null &&
                 prev.author?.id == m.author?.id &&
                 m.createdAt.difference(prev.createdAt) <
                     const Duration(minutes: 5);
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (newDay) _DaySeparator(m.createdAt),
-                _Bubble(
-                  message: m,
-                  mine: m.author?.id == me.id,
-                  showHeader: !grouped,
-                  maxWidth: maxBubble,
-                  onDelete: canDelete(m) ? () => _delete(m) : null,
-                ),
-              ],
+            return KeyedSubtree(
+              key: _keys.putIfAbsent(m.id, GlobalKey.new),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (newDay) _DaySeparator(m.createdAt),
+                  _Bubble(
+                    message: m,
+                    mine: mine,
+                    showHeader: !grouped,
+                    maxWidth: maxBubble,
+                    highlight: m.id == _highlightId ? _highlightCount : null,
+                    onQuoteTap: m.replyTo == null
+                        ? null
+                        : () => _jumpTo(m.replyTo!.id),
+                    onReply: widget.canWrite && live
+                        ? () => mode.replyTo(m)
+                        : null,
+                    onEdit: widget.canWrite && live && mine
+                        ? () => mode.edit(m)
+                        : null,
+                    onDelete: canDelete(m) ? () => _delete(m) : null,
+                  ),
+                ],
+              ),
             );
           },
         );
@@ -229,6 +307,10 @@ class _Bubble extends StatefulWidget {
     required this.mine,
     required this.showHeader,
     required this.maxWidth,
+    this.highlight,
+    this.onQuoteTap,
+    this.onReply,
+    this.onEdit,
     this.onDelete,
   });
 
@@ -237,7 +319,14 @@ class _Bubble extends StatefulWidget {
   final bool showHeader;
   final double maxWidth;
 
-  /// Set when the user may delete this message (moderation).
+  /// Non-null right after jumping to this message: it lights up and fades out.
+  final int? highlight;
+
+  final VoidCallback? onQuoteTap;
+
+  /// Each action is null when the user may not do it (then its button is hidden).
+  final VoidCallback? onReply;
+  final VoidCallback? onEdit;
   final VoidCallback? onDelete;
 
   @override
@@ -245,7 +334,7 @@ class _Bubble extends StatefulWidget {
 }
 
 class _BubbleState extends State<_Bubble> {
-  /// The delete button only shows while the mouse is over the message.
+  /// The action buttons only show while the mouse is over the message.
   bool _hovered = false;
 
   @override
@@ -254,9 +343,8 @@ class _BubbleState extends State<_Bubble> {
     final colors = theme.extension<ChatColors>()!;
     final message = widget.message;
     final mine = widget.mine;
-    final showHeader = widget.showHeader;
-    final maxWidth = widget.maxWidth;
     final time = hourMinute(message.createdAt);
+    final textColor = mine ? colors.onOwnBubble : theme.colorScheme.onSurface;
 
     final Widget bubble = message.deleted
         // The text is gone on the server too; only this placeholder remains.
@@ -276,7 +364,7 @@ class _BubbleState extends State<_Bubble> {
             ),
           )
         : Container(
-            constraints: BoxConstraints(maxWidth: maxWidth),
+            constraints: BoxConstraints(maxWidth: widget.maxWidth),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: mine ? colors.ownBubble : colors.otherBubble,
@@ -290,23 +378,73 @@ class _BubbleState extends State<_Bubble> {
               ),
             ),
             // Plain text only: the content is displayed exactly as typed, never as markup or links.
-            child: SelectableText(
-              message.content,
+            child: SelectableText.rich(
+              TextSpan(
+                text: message.content,
+                children: [
+                  if (message.editedAt != null)
+                    TextSpan(
+                      text: '  (edited)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: textColor.withValues(alpha: 0.6),
+                      ),
+                    ),
+                ],
+              ),
+              key: Key('message-${message.id}'),
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: mine ? colors.onOwnBubble : theme.colorScheme.onSurface,
+                color: textColor,
                 height: 1.45,
               ),
             ),
           );
 
-    return Padding(
-      padding: EdgeInsets.only(top: showHeader ? 12 : 4),
+    final actions = [
+      if (widget.onReply case final onReply?)
+        _action('reply', Icons.reply, 'Reply', onReply),
+      if (widget.onEdit case final onEdit?)
+        _action('edit', Icons.edit_outlined, 'Edit', onEdit),
+      if (widget.onDelete case final onDelete?)
+        _action('delete', Icons.delete_outline, 'Delete', onDelete),
+    ];
+
+    Widget body = bubble;
+    if (actions.isNotEmpty) {
+      // Faded out (not removed) when not hovered, so nothing jumps around.
+      final bar = AnimatedOpacity(
+        opacity: _hovered ? 1 : 0,
+        duration: const Duration(milliseconds: 120),
+        child: Row(mainAxisSize: MainAxisSize.min, children: actions),
+      );
+      body = MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          // Actions on the inner side: right of others' bubbles, left of mine.
+          children: mine
+              ? [bar, Flexible(child: bubble)]
+              : [Flexible(child: bubble), bar],
+        ),
+      );
+    }
+
+    final content = Padding(
+      padding: EdgeInsets.only(top: widget.showHeader ? 12 : 4),
       child: Column(
         crossAxisAlignment: mine
             ? CrossAxisAlignment.end
             : CrossAxisAlignment.start,
         children: [
-          if (showHeader)
+          if (message.replyTo case final quote?)
+            _Quote(
+              quote: quote,
+              mine: mine,
+              maxWidth: widget.maxWidth,
+              onTap: widget.onQuoteTap,
+            ),
+          if (widget.showHeader)
             Padding(
               padding: const EdgeInsets.only(bottom: 5),
               child: Text.rich(
@@ -327,34 +465,133 @@ class _BubbleState extends State<_Bubble> {
                 style: theme.textTheme.bodySmall,
               ),
             ),
-          if (widget.onDelete == null)
-            bubble
-          else
-            MouseRegion(
-              onEnter: (_) => setState(() => _hovered = true),
-              onExit: (_) => setState(() => _hovered = false),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
+          body,
+        ],
+      ),
+    );
+
+    final highlight = widget.highlight;
+    if (highlight == null) return content;
+    // Just jumped here: a soft background that fades out over 2 seconds.
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(highlight),
+      tween: Tween(begin: 1, end: 0),
+      duration: const Duration(seconds: 2),
+      builder: (context, t, child) => DecoratedBox(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primary.withValues(alpha: 0.15 * t),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: child,
+      ),
+      child: content,
+    );
+  }
+
+  Widget _action(String id, IconData icon, String tip, VoidCallback onTap) {
+    return IconButton(
+      key: Key('$id-message-${widget.message.id}'),
+      tooltip: tip,
+      iconSize: 18,
+      visualDensity: VisualDensity.compact,
+      color: Theme.of(context).extension<ChatColors>()!.muted,
+      icon: Icon(icon),
+      onPressed: onTap,
+    );
+  }
+}
+
+/// The quote above a reply: a curved line, the original author, and a one-line
+/// excerpt. Tapping it jumps to the original.
+class _Quote extends StatelessWidget {
+  const _Quote({
+    required this.quote,
+    required this.mine,
+    required this.maxWidth,
+    this.onTap,
+  });
+
+  final ReplyQuote quote;
+  final bool mine;
+  final double maxWidth;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.extension<ChatColors>()!;
+    final style = theme.textTheme.bodySmall?.copyWith(color: colors.muted);
+    final side = BorderSide(color: colors.otherBubbleBorder, width: 2);
+
+    // ╭── the "elbow" that connects the quote to the message below it.
+    final elbow = Container(
+      width: 18,
+      height: 10,
+      margin: const EdgeInsets.only(top: 8),
+      decoration: BoxDecoration(
+        border: Border(
+          top: side,
+          left: mine ? BorderSide.none : side,
+          right: mine ? side : BorderSide.none,
+        ),
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(mine ? 0 : 6),
+          topRight: Radius.circular(mine ? 6 : 0),
+        ),
+      ),
+    );
+
+    final text = Flexible(
+      child: Text.rich(
+        quote.deleted
+            ? const TextSpan(
+                text: 'Original message deleted',
+                style: TextStyle(fontStyle: FontStyle.italic),
+              )
+            : TextSpan(
                 children: [
-                  Flexible(child: bubble),
-                  // Faded out (not removed) when not hovered, so its place does not jump.
-                  AnimatedOpacity(
-                    opacity: _hovered ? 1 : 0,
-                    duration: const Duration(milliseconds: 120),
-                    child: IconButton(
-                      key: Key('delete-message-${message.id}'),
-                      tooltip: 'Delete message',
-                      iconSize: 18,
-                      visualDensity: VisualDensity.compact,
-                      color: colors.muted,
-                      icon: const Icon(Icons.delete_outline),
-                      onPressed: widget.onDelete,
+                  TextSpan(
+                    text: '${quote.author?.displayName ?? 'Deleted user'}  ',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: theme.colorScheme.primary,
                     ),
                   ),
+                  // One line: line breaks in the original would break the layout.
+                  TextSpan(text: quote.content.replaceAll('\n', ' ')),
                 ],
               ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: MouseRegion(
+          cursor: onTap == null ? MouseCursor.defer : SystemMouseCursors.click,
+          child: GestureDetector(
+            key: Key('quote-${quote.id}'),
+            onTap: onTap,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: mine
+                  ? [text, const SizedBox(width: 6), elbow]
+                  : [
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: elbow,
+                      ),
+                      const SizedBox(width: 6),
+                      text,
+                    ],
             ),
-        ],
+          ),
+        ),
       ),
     );
   }
