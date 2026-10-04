@@ -8,6 +8,7 @@ import '../../core/server_address.dart';
 import '../../core/server_info.dart';
 import '../../core/session_controller.dart';
 import '../../widgets/centered_form.dart';
+import '../../widgets/release_badge.dart';
 import '../../widgets/about.dart';
 import 'certificate_dialog.dart';
 
@@ -93,6 +94,8 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
           style: theme.textTheme.headlineMedium,
           textAlign: TextAlign.center,
         ),
+        const SizedBox(height: AppSpacing.small),
+        const ReleaseBadge(withNotice: true),
         const SizedBox(height: AppSpacing.small),
         Text(
           'Enter the address of the server you want to join.',

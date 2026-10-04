@@ -6,6 +6,7 @@ import '../../app_config/app_theme.dart';
 import '../../core/api_client.dart';
 import '../../core/session_controller.dart';
 import '../../widgets/centered_form.dart';
+import '../../widgets/release_badge.dart';
 
 enum _Mode { login, register }
 
@@ -79,6 +80,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           style: theme.textTheme.headlineMedium,
           textAlign: TextAlign.center,
         ),
+        const SizedBox(height: AppSpacing.small),
+        const ReleaseBadge(withNotice: true),
         const SizedBox(height: AppSpacing.small),
         Text(
           widget.serverName,

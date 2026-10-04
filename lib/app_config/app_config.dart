@@ -16,8 +16,20 @@ abstract final class AppConfig {
   /// Empty in the official client; a branded build can preset it.
   static const defaultServerAddress = '';
 
-  /// Shown on the About page. Keep in sync with "version:" in pubspec.yaml.
-  static const appVersion = '0.1.0';
+  /// App version. MUST equal "version:" in pubspec.yaml without the "+build" part
+  /// (a test checks this). A "-alpha" or "-beta" suffix marks a pre-release: the app
+  /// then shows a badge and a short warning (see widgets/release_badge.dart).
+  static const appVersion = '0.1.0-alpha';
+
+  /// "ALPHA", "BETA", ... for pre-releases; null for normal releases.
+  static String? get releaseStage {
+    final dash = appVersion.indexOf('-');
+    return dash < 0 ? null : appVersion.substring(dash + 1).toUpperCase();
+  }
+
+  /// What a pre-release means for testers (shown under the badge).
+  static const preReleaseNotice =
+      'Test version: expect bugs. Messages and accounts may be reset.';
 
   /// Copyright line on the About page.
   static const legalese = '© 2026 Osama Alamri · MIT License';

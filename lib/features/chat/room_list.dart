@@ -7,6 +7,7 @@ import '../../core/models.dart';
 import '../../core/session_controller.dart';
 import 'chat_providers.dart';
 import '../../widgets/about.dart';
+import '../../widgets/release_badge.dart';
 import 'dialogs.dart';
 import 'realtime_controller.dart';
 import 'time_format.dart';
@@ -109,6 +110,13 @@ class RoomList extends ConsumerWidget {
               ),
               _ => const Center(child: CircularProgressIndicator()),
             },
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 8, 24, 10),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: ReleaseBadge(),
+            ),
           ),
           Divider(color: colors.line),
           _AccountBar(session: session),
