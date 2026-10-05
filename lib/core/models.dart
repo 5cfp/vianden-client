@@ -127,6 +127,7 @@ class Channel {
     required this.name,
     required this.topic,
     required this.position,
+    this.type = 'text',
     this.viewRole = Role.member,
     this.sendRole = Role.member,
     this.lastMessage,
@@ -148,6 +149,7 @@ class Channel {
         name: name,
         topic: topic,
         position: position,
+        type: json['type'] is String ? json['type'] as String : 'text',
         viewRole: Role.parse((json)['view_role'] as String?),
         sendRole: Role.parse((json)['send_role'] as String?),
         lastMessage: last == null ? null : MessagePreview.fromJson(last),
@@ -164,7 +166,11 @@ class Channel {
   final String topic;
   final int position;
 
-  /// Minimum role to see / to write in this channel.
+  /// "text" or "voice" (voice-only: no messages). Set at creation, never changes.
+  final String type;
+  bool get isVoice => type == 'voice';
+
+  /// Minimum role to see / to write in this channel. (Voice: who may join / speak.)
   final Role viewRole;
   final Role sendRole;
   final MessagePreview? lastMessage;
@@ -190,6 +196,7 @@ class Channel {
     name: name,
     topic: topic,
     position: position,
+    type: type,
     viewRole: viewRole,
     sendRole: sendRole,
     lastMessage: lastMessage ?? this.lastMessage,
@@ -511,3 +518,51 @@ String? _avatarPath(Object? v) =>
     v is String && RegExp(r'^/api/v1/avatars/[0-9a-f]{64}$').hasMatch(v)
     ? v
     : null;
+
+/// One person in a voice channel (see docs/API.md, "Voice channel state").
+class VoiceParticipant {
+  const VoiceParticipant({
+    required this.user,
+    this.muted = false,
+    this.deafened = false,
+    this.serverMuted = false,
+    this.canSpeak = true,
+  });
+
+  factory VoiceParticipant.fromJson(Object? json) {
+    if (json case {'user': Object user}) {
+      final map = json as Map;
+      return VoiceParticipant(
+        user: Author.fromJson(user),
+        muted: map['muted'] == true,
+        deafened: map['deafened'] == true,
+        serverMuted: map['server_muted'] == true,
+        canSpeak: map['can_speak'] != false,
+      );
+    }
+    throw const FormatException('unexpected voice participant');
+  }
+
+  final Author user;
+  final bool muted;
+  final bool deafened;
+  final bool serverMuted;
+  final bool canSpeak;
+}
+
+/// Who is in one voice channel.
+class VoiceChannelState {
+  const VoiceChannelState(this.channelId, this.participants);
+
+  factory VoiceChannelState.fromJson(Object? json) {
+    if (json case {'channel_id': int id, 'participants': List<Object?> list}) {
+      return VoiceChannelState(id, [
+        for (final p in list) VoiceParticipant.fromJson(p),
+      ]);
+    }
+    throw const FormatException('unexpected voice state');
+  }
+
+  final int channelId;
+  final List<VoiceParticipant> participants;
+}

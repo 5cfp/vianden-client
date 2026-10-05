@@ -137,6 +137,7 @@ class ApiClient {
     String topic = '',
     Role viewRole = Role.member,
     Role? sendRole, // null: the server uses viewRole
+    String type = 'text', // or "voice"
   }) async {
     final json = await _send(
       'POST',
@@ -146,6 +147,7 @@ class ApiClient {
         'topic': topic,
         'view_role': viewRole.wire,
         'send_role': ?sendRole?.wire,
+        'type': type,
       },
     );
     return _parse(() => _channel(json));
@@ -227,6 +229,28 @@ class ApiClient {
     if (json case {'user': Object u}) return User.fromJson(u);
     throw const FormatException('unexpected user response');
   });
+
+  /// Who is in which voice channel (only channels we can see).
+  Future<List<VoiceChannelState>> listVoice() async {
+    final json = await _send('GET', '/api/v1/voice');
+    return _parse(() {
+      if (json case {'channels': List<Object?> list}) {
+        return [for (final c in list) VoiceChannelState.fromJson(c)];
+      }
+      throw const FormatException('unexpected voice list');
+    });
+  }
+
+  /// Moderators: remove someone from a voice channel.
+  Future<void> voiceDisconnect(int channelId, int userId) =>
+      _send('POST', '/api/v1/channels/$channelId/voice/$userId/disconnect');
+
+  /// Moderators: server-mute (the server stops forwarding their audio) or unmute.
+  Future<void> voiceMute(int channelId, int userId, bool muted) => _send(
+    'PUT',
+    '/api/v1/channels/$channelId/voice/$userId/mute',
+    body: {'muted': muted},
+  );
 
   /// Tells the server we have read the room up to [messageId] (it never moves back).
   Future<void> markRead(int channelId, int messageId) => _send(

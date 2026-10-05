@@ -35,10 +35,16 @@ Runs the tests, builds the release, and writes `dist\vianden-client_<version>_wi
 ## Self-signed servers (trust on first use)
 For servers without a domain, the app shows the certificate's fingerprint once; compare it with the one the server owner gives you. The app remembers it and warns if it ever changes.
 
+## Voice channels
+Click a voice channel to join it. Voice uses WebRTC (`flutter_webrtc`); the first Windows build downloads Google's WebRTC library (`libwebrtc.dll`) automatically. On Windows, allow microphone access for desktop apps (**Settings → Privacy & security → Microphone → Let desktop apps access your microphone**); without a microphone the app joins as a listener. Echo cancellation and noise suppression are on.
+
+Windows normally treats voice apps like a phone call and turns all other sounds down by 80% ("communications activity"). The app opts out of that (`windows/runner/audio_ducking.cpp`, Microsoft's documented `SetDuckingPreference`), so music and games keep their volume while you are in voice.
+
 ## Tests
 ```powershell
 flutter test
 ```
+Voice tests use a fake WebRTC engine (`FakeVoiceEngine` in `test/helpers.dart`), so no microphone is needed.
 
 ## License check
 This project only allows permissive dependency licenses. Run this whenever dependencies change (`pubspec.yaml`):
@@ -54,7 +60,8 @@ If `very_good` is not found, add `%LOCALAPPDATA%\Pub\Cache\bin` to your PATH.
 | `lib/app_config/` | **All** branding and theme values (app name, colors, default server). Widgets never hardcode these. |
 | `lib/core/` | Code shared by all features: API client, live connection (WebSocket), data models, session state (Riverpod), secure storage |
 | `lib/widgets/` | Small reusable widgets |
-| `lib/features/` | One folder per screen/feature: `connect/`, `auth/` (login + register), `chat/` (rooms, messages, composer, owner room tools) |
+| `lib/features/` | One folder per screen/feature: `connect/`, `auth/` (login + register), `chat/` (rooms, messages, composer, room and member tools), `voice/` (voice channels) |
+| `licenses/` | License notices for native libraries that Flutter does not list by itself (WebRTC) |
 | `test/` | Tests, mirroring `lib/` |
 
 ## License

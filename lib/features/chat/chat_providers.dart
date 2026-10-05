@@ -111,6 +111,7 @@ class ChannelsController extends AsyncNotifier<List<Channel>> {
     String topic, {
     Role viewRole = Role.member,
     Role sendRole = Role.member,
+    String type = 'text',
   }) async {
     final c = await _authorized(
       ref,
@@ -119,6 +120,7 @@ class ChannelsController extends AsyncNotifier<List<Channel>> {
         topic: topic,
         viewRole: viewRole,
         sendRole: sendRole,
+        type: type,
       ),
     );
     await refresh();

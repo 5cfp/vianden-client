@@ -13,6 +13,7 @@ import '../../widgets/user_avatar.dart';
 import 'dialogs.dart';
 import 'members_dialog.dart';
 import 'profile_dialog.dart';
+import '../voice/voice_widgets.dart';
 import 'realtime_controller.dart';
 import 'time_format.dart';
 
@@ -79,6 +80,7 @@ class RoomList extends ConsumerWidget {
                       title: 'New room',
                       actionLabel: 'Create room',
                       myRole: user.role,
+                      allowVoice: session.info.voice,
                       save: (s) async {
                         final room = await ref
                             .read(channelsProvider.notifier)
@@ -87,7 +89,10 @@ class RoomList extends ConsumerWidget {
                               s.topic,
                               viewRole: s.viewRole,
                               sendRole: s.sendRole,
+                              type: s.type,
                             );
+                        // Voice rooms are joined from the list, not opened.
+                        if (room.isVoice) return;
                         ref
                             .read(selectedChannelProvider.notifier)
                             .select(room.id);
@@ -102,7 +107,7 @@ class RoomList extends ConsumerWidget {
             child: switch (rooms) {
               AsyncData(:final value) => ListView(
                 children: [
-                  for (final room in value)
+                  for (final room in value.where((r) => !r.isVoice))
                     _RoomTile(
                       room: room,
                       selected: room.id == selected,
@@ -113,6 +118,26 @@ class RoomList extends ConsumerWidget {
                         onOpen(room.id);
                       },
                     ),
+                  if (value.any((r) => r.isVoice)) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 18, 24, 4),
+                      child: Text(
+                        session.info.voice
+                            ? 'Voice'
+                            : 'Voice (not available on this server)',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: colors.muted,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    for (final room in value.where((r) => r.isVoice))
+                      VoiceChannelTile(
+                        room: room,
+                        me: user,
+                        available: session.info.voice,
+                      ),
+                  ],
                 ],
               ),
               AsyncError() => _LoadError(
@@ -128,6 +153,7 @@ class RoomList extends ConsumerWidget {
               child: ReleaseBadge(),
             ),
           ),
+          VoicePanel(rooms: rooms.value ?? const []),
           Divider(color: colors.line),
           _AccountBar(session: session),
         ],

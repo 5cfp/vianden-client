@@ -12,6 +12,7 @@ import 'dialogs.dart';
 import 'message_view.dart';
 import 'realtime_controller.dart';
 import 'room_list.dart';
+import '../voice/voice_controller.dart';
 
 /// The main screen when logged in: rooms on the left, the open room on the right.
 /// On a narrow window it shows one of the two at a time.
@@ -35,7 +36,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Watching the realtime provider opens the live connection and keeps it open
     // for as long as this screen is shown.
     ref.watch(realtimeProvider);
-    final rooms = ref.watch(channelsProvider).value ?? const <Channel>[];
+    // The same for voice: it stays alive (and in its channel) while this screen is shown.
+    ref.watch(voiceProvider);
+    // Voice tells the user why something happened (e.g. "Disconnected by a moderator").
+    ref.listen(voiceProvider.select((v) => v.notice), (_, notice) {
+      if (notice == null) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(notice)));
+      ref.read(voiceProvider.notifier).clearNotice();
+    });
+    // Only text rooms open in the chat pane (voice rooms are joined from the list).
+    final rooms = [
+      for (final r in ref.watch(channelsProvider).value ?? const <Channel>[])
+        if (!r.isVoice) r,
+    ];
     final selectedId = ref.watch(selectedChannelProvider);
 
     // Pick the first room by default, and fall back to it if the open room was deleted.

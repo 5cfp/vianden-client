@@ -14,6 +14,8 @@ import 'package:vianden_client/core/realtime_connection.dart';
 import 'package:vianden_client/core/session_controller.dart';
 import 'package:vianden_client/core/session_store.dart';
 import 'package:vianden_client/features/chat/realtime_controller.dart';
+import 'package:vianden_client/features/voice/system_audio.dart';
+import 'package:vianden_client/features/voice/voice_engine.dart';
 import 'package:vianden_client/main.dart';
 
 /// Keeps "saved" data in memory instead of the real OS storage.
@@ -51,6 +53,7 @@ const fakeRolePermissions = <Role, List<String>>{
     Permission.kickMembers,
     Permission.banMembers,
     Permission.mentionEveryone,
+    Permission.moderateVoice,
   ],
   Role.admin: [
     Permission.manageChannels,
@@ -60,11 +63,13 @@ const fakeRolePermissions = <Role, List<String>>{
     Permission.kickMembers,
     Permission.banMembers,
     Permission.mentionEveryone,
+    Permission.moderateVoice,
   ],
   Role.moderator: [
     Permission.deleteMessages,
     Permission.kickMembers,
     Permission.mentionEveryone,
+    Permission.moderateVoice,
   ],
   Role.member: [],
 };
@@ -128,6 +133,9 @@ class FakeChannel {
   String topic;
   Role viewRole;
   Role sendRole;
+
+  /// "text" or "voice".
+  String type = 'text';
 
   bool canView(FakeUser u) => u.role.atLeast(viewRole);
   bool canSend(FakeUser u) => canView(u) && u.role.atLeast(sendRole);
@@ -220,6 +228,7 @@ class FakeConnection implements RealtimeConnection {
   void serverClose([int? code]) {
     _closeCode = code;
     server.connections.remove(this);
+    server.voiceGone(this);
     if (!_incoming.isClosed) _incoming.close();
   }
 
@@ -234,6 +243,10 @@ class FakeConnection implements RealtimeConnection {
   void send(String text) {
     final msg = jsonDecode(text) as Map<String, dynamic>;
     sent.add(msg);
+    if (msg['type'] case final String t when t.startsWith('voice.')) {
+      server.handleVoice(this, t, (msg['data'] as Map?) ?? const {});
+      return;
+    }
     if (msg case {'type': 'typing', 'data': {'channel_id': final int ch}}) {
       for (final c in server.connections) {
         if (c.user!.id != user!.id) {
@@ -246,6 +259,7 @@ class FakeConnection implements RealtimeConnection {
   @override
   Future<void> close() async {
     server.connections.remove(this);
+    server.voiceGone(this);
     if (!_incoming.isClosed) await _incoming.close();
   }
 }
@@ -347,6 +361,12 @@ class FakeServer {
   /// Last read message per (user id, channel id).
   final readStates = <(int, int), int>{};
 
+  /// The app's WebRTC side in tests (see [FakeVoiceEngine]).
+  final voiceEngine = FakeVoiceEngine();
+
+  /// How often the app asked Windows not to lower other sounds (voice).
+  var duckingOptOuts = 0;
+
   /// Avatar pictures by key.
   final avatars = <String, List<int>>{};
   var _nextAvatar = 1;
@@ -427,6 +447,107 @@ class FakeServer {
     }
   }
 
+  // ---- voice (M7): the server's side of the signaling ----
+
+  bool voiceAvailable = true;
+
+  /// Who is in each voice channel, in joining order.
+  final voiceRooms = <int, List<FakeVoiceMember>>{};
+
+  /// Client messages that reached the voice part (type and data), for assertions.
+  final voiceLog = <(String, Map)>[];
+  var _offers = 0;
+
+  FakeVoiceMember? _memberOf(FakeConnection c) {
+    for (final m in voiceRooms.values.expand((l) => l)) {
+      if (identical(m.conn, c)) return m;
+    }
+    return null;
+  }
+
+  void handleVoice(FakeConnection c, String type, Map data) {
+    voiceLog.add((type, data));
+    final me = c.user!;
+    switch (type) {
+      case 'voice.join':
+        final ch = channels
+            .where((x) => x.id == data['channel_id'] && x.type == 'voice')
+            .where((x) => x.canView(me))
+            .firstOrNull;
+        if (ch == null) {
+          c.push('voice.error', {
+            'code': 'not_found',
+            'message': 'voice channel not found',
+          });
+          return;
+        }
+        for (final room in voiceRooms.entries) {
+          room.value.removeWhere((m) => m.user.id == me.id);
+          pushVoiceState(room.key);
+        }
+        final m = FakeVoiceMember(me, c, canSpeak: ch.canSend(me));
+        voiceRooms.putIfAbsent(ch.id, () => []).add(m);
+        c.push('voice.joined', {'channel_id': ch.id, 'can_speak': m.canSpeak});
+        c.push('voice.offer', {'sdp': 'offer-${++_offers}'});
+        c.push('voice.candidate', {
+          'candidate': {'candidate': 'server-candidate', 'sdpMid': '0'},
+        });
+        pushVoiceState(ch.id);
+      case 'voice.leave':
+        voiceGone(c);
+      case 'voice.self':
+        final m = _memberOf(c);
+        if (m == null) return;
+        m
+          ..muted = data['muted'] == true
+          ..deafened = data['deafened'] == true;
+        pushVoiceState(
+          voiceRooms.entries.firstWhere((e) => e.value.contains(m)).key,
+        );
+      case 'voice.speaking':
+        final m = _memberOf(c);
+        if (m == null) return;
+        final room = voiceRooms.entries.firstWhere((e) => e.value.contains(m));
+        for (final other in room.value) {
+          other.conn?.push('voice.speaking', {
+            'channel_id': room.key,
+            'user_id': me.id,
+            'speaking': data['speaking'] == true,
+          });
+        }
+    }
+  }
+
+  /// A connection closed: its voice session ends.
+  void voiceGone(FakeConnection c) {
+    for (final room in voiceRooms.entries) {
+      if (room.value.any((m) => identical(m.conn, c))) {
+        room.value.removeWhere((m) => identical(m.conn, c));
+        pushVoiceState(room.key);
+      }
+    }
+  }
+
+  /// Tells everyone who can see the channel who is in it (voice.state).
+  void pushVoiceState(int channelId) {
+    final ch = channels.where((x) => x.id == channelId).firstOrNull;
+    pushAll('voice.state', voiceStateJson(channelId), ch?.canView);
+  }
+
+  Map<String, Object?> voiceStateJson(int channelId) => {
+    'channel_id': channelId,
+    'participants': [
+      for (final m in voiceRooms[channelId] ?? const <FakeVoiceMember>[])
+        {
+          'user': _info(m.user),
+          'muted': m.muted,
+          'deafened': m.deafened,
+          'server_muted': m.serverMuted,
+          'can_speak': m.canSpeak,
+        },
+    ],
+  };
+
   /// Simulates a network drop for every connection.
   void dropAll() {
     for (final c in List.of(connections)) {
@@ -459,6 +580,7 @@ class FakeServer {
           'name': name,
           'version': '0.1.0',
           'protocol_version': protocolVersion,
+          'voice': voiceAvailable,
         });
 
       case ('POST', '/api/v1/login'):
@@ -572,6 +694,44 @@ class FakeServer {
       final bytes = avatars[m.group(1)];
       if (bytes == null) return _error(404, 'not_found', 'avatar not found');
       return http.Response.bytes(bytes, 200);
+    }
+
+    // ---- voice (M7) ----
+    if (path == '/api/v1/voice' && r.method == 'GET') {
+      return _json(200, {
+        'available': voiceAvailable,
+        'channels': [
+          for (final e in voiceRooms.entries)
+            if (e.value.isNotEmpty &&
+                channels.any((c) => c.id == e.key && c.canView(me)))
+              voiceStateJson(e.key),
+        ],
+      });
+    }
+    if (RegExp(r'^/api/v1/channels/(\d+)/voice/(\d+)/(disconnect|mute)$')
+            .firstMatch(path)
+        case final vm?) {
+      final ch = int.parse(vm.group(1)!);
+      final target = (voiceRooms[ch] ?? const <FakeVoiceMember>[])
+          .where((m) => m.user.id == int.parse(vm.group(2)!))
+          .firstOrNull;
+      if (target == null) {
+        return _error(404, 'not_in_voice', 'not in this voice channel');
+      }
+      if (!me.canActOn(Permission.moderateVoice, target.user.role)) {
+        return forbidden;
+      }
+      if (vm.group(3) == 'disconnect') {
+        voiceRooms[ch]!.remove(target);
+        target.conn?.push('voice.left', {
+          'channel_id': ch,
+          'reason': 'disconnected',
+        });
+      } else {
+        target.serverMuted = body['muted'] == true;
+      }
+      pushVoiceState(ch);
+      return http.Response('', 204);
     }
 
     // ---- members ----
@@ -728,6 +888,7 @@ class FakeServer {
           view,
           send,
         );
+        if (body['type'] case final String t) c.type = t;
         channels.add(c);
         pushAll('channel.created', _channelJson(c), c.canView);
         return _json(201, {'channel': _channelJson(c)});
@@ -918,8 +1079,8 @@ class FakeServer {
       'id': c.id,
       'name': c.name,
       'topic': c.topic,
-      'type': 'text',
       'position': channels.indexOf(c),
+      'type': c.type,
       'view_role': c.viewRole.wire,
       'send_role': c.sendRole.wire,
       'last_message': withPreview && last != null
@@ -976,6 +1137,10 @@ Future<void> pumpApp(
         httpClientProvider.overrideWithValue(server.client),
         sessionStoreProvider.overrideWithValue(store),
         realtimeConnectorProvider.overrideWithValue(server.connect),
+        voiceEngineProvider.overrideWithValue(server.voiceEngine),
+        systemAudioProvider.overrideWithValue(
+          () async => server.duckingOptOuts++,
+        ),
         certificateTrustProvider.overrideWithValue(
           server.trust ??= CertificateTrust(),
         ),
@@ -1057,3 +1222,69 @@ class FakeUpload {
 final tinyPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAFElEQVR4nAAHAPj/AshQKChQyAMACNUCgw8qW4UAAAAASUVORK5CYII=',
 );
+
+/// Someone in a voice channel on the fake server. [conn] is null for people the test
+/// puts there directly (no app behind them).
+class FakeVoiceMember {
+  FakeVoiceMember(this.user, this.conn, {this.canSpeak = true});
+  final FakeUser user;
+  final FakeConnection? conn;
+  bool canSpeak;
+  bool muted = false;
+  bool deafened = false;
+  bool serverMuted = false;
+}
+
+/// Stands in for WebRTC in tests: records what the app asks for, and lets the test play
+/// the network (candidates, connection state, microphone level).
+class FakeVoiceEngine implements VoiceEngine {
+  final peers = <FakeVoicePeer>[];
+
+  /// Make the next connect with a microphone fail (no microphone / no permission).
+  bool micFails = false;
+
+  FakeVoicePeer? get last => peers.lastOrNull;
+
+  @override
+  Future<VoicePeer> connect({required bool withMic}) async {
+    if (withMic && micFails) throw Exception('no microphone');
+    final p = FakeVoicePeer(withMic);
+    peers.add(p);
+    return p;
+  }
+}
+
+class FakeVoicePeer implements VoicePeer {
+  FakeVoicePeer(this.withMic);
+  final bool withMic;
+  final offers = <String>[];
+  final remoteCandidates = <Map<String, dynamic>>[];
+  bool micEnabled = true;
+  bool outputEnabled = true;
+  bool closed = false;
+  final candidateCtl = StreamController<Map<String, dynamic>>.broadcast();
+  final linkCtl = StreamController<VoiceLink>.broadcast();
+  final levelCtl = StreamController<double>.broadcast();
+
+  @override
+  Future<String> answer(String offerSdp) async {
+    offers.add(offerSdp);
+    return 'answer-to-$offerSdp';
+  }
+
+  @override
+  Future<void> addCandidate(Map<String, dynamic> c) async =>
+      remoteCandidates.add(c);
+  @override
+  Stream<Map<String, dynamic>> get candidates => candidateCtl.stream;
+  @override
+  Stream<VoiceLink> get link => linkCtl.stream;
+  @override
+  Stream<double> get micLevel => levelCtl.stream;
+  @override
+  void setMicEnabled(bool enabled) => micEnabled = enabled;
+  @override
+  void setOutputEnabled(bool enabled) => outputEnabled = enabled;
+  @override
+  Future<void> close() async => closed = true;
+}

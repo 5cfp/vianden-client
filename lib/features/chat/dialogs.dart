@@ -13,6 +13,7 @@ typedef RoomSettings = ({
   String topic,
   Role viewRole,
   Role sendRole,
+  String type,
 });
 
 /// Asks for a room's name, topic, and who may see / write in it (create or edit).
@@ -25,6 +26,7 @@ Future<void> showRoomDialog(
   required String actionLabel,
   required Role myRole,
   Channel? initial,
+  bool allowVoice = false,
   required Future<void> Function(RoomSettings settings) save,
 }) {
   return showDialog<void>(
@@ -34,6 +36,7 @@ Future<void> showRoomDialog(
       actionLabel: actionLabel,
       myRole: myRole,
       initial: initial,
+      allowVoice: allowVoice,
       save: save,
     ),
   );
@@ -45,6 +48,7 @@ class _RoomDialog extends StatefulWidget {
     required this.actionLabel,
     required this.myRole,
     required this.initial,
+    this.allowVoice = false,
     required this.save,
   });
 
@@ -52,6 +56,9 @@ class _RoomDialog extends StatefulWidget {
   final String actionLabel;
   final Role myRole;
   final Channel? initial;
+
+  /// Creating a room on a server with voice: offer Text / Voice.
+  final bool allowVoice;
   final Future<void> Function(RoomSettings settings) save;
 
   @override
@@ -63,6 +70,7 @@ class _RoomDialogState extends State<_RoomDialog> {
   late final _topic = TextEditingController(text: widget.initial?.topic ?? '');
   late Role _viewRole = widget.initial?.viewRole ?? Role.member;
   late Role _sendRole = widget.initial?.sendRole ?? Role.member;
+  late String _type = widget.initial?.type ?? 'text';
   bool _busy = false;
   String? _error;
 
@@ -90,6 +98,7 @@ class _RoomDialogState extends State<_RoomDialog> {
         topic: _topic.text,
         viewRole: _viewRole,
         sendRole: _sendRole,
+        type: _type,
       ));
       if (mounted) Navigator.of(context).pop();
       return;
@@ -111,6 +120,29 @@ class _RoomDialogState extends State<_RoomDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // The type is chosen once, when creating (the server never changes it).
+            if (widget.initial == null && widget.allowVoice) ...[
+              SegmentedButton<String>(
+                key: const Key('room-type'),
+                segments: const [
+                  ButtonSegment(
+                    value: 'text',
+                    label: Text('Text'),
+                    icon: Icon(Icons.tag),
+                  ),
+                  ButtonSegment(
+                    value: 'voice',
+                    label: Text('Voice'),
+                    icon: Icon(Icons.volume_up_outlined),
+                  ),
+                ],
+                selected: {_type},
+                onSelectionChanged: _busy
+                    ? null
+                    : (s) => setState(() => _type = s.first),
+              ),
+              const SizedBox(height: AppSpacing.small),
+            ],
             TextField(
               key: const Key('room-name'),
               controller: _name,
@@ -144,7 +176,7 @@ class _RoomDialogState extends State<_RoomDialog> {
             const SizedBox(height: AppSpacing.medium),
             RoleDropdown(
               key: const Key('room-send-role'),
-              label: 'Who can write',
+              label: _type == 'voice' ? 'Who can speak' : 'Who can write',
               value: _sendRole,
               choices: [
                 for (final r in _choices)

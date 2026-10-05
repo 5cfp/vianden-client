@@ -10,6 +10,7 @@ import '../../core/models.dart';
 import '../../core/realtime_connection.dart';
 import '../../core/session_controller.dart';
 import 'chat_providers.dart';
+import '../voice/voice_controller.dart';
 
 /// How the app opens live connections. Tests replace it with a fake.
 final realtimeConnectorProvider = Provider<RealtimeConnector>(
@@ -94,6 +95,17 @@ class RealtimeController extends Notifier<RealtimeState> {
     });
     Future.microtask(_run); // start connecting after build() returns
     return const RealtimeState();
+  }
+
+  /// Sends a message to the server (voice signaling uses it). Returns false if the live
+  /// connection is down: the message is dropped, not queued.
+  bool send(String type, Map<String, Object?> data) {
+    final conn = _conn;
+    if (conn == null || state.status != ConnectionStatus.connected) {
+      return false;
+    }
+    conn.send(jsonEncode({'type': type, 'data': data}));
+    return true;
   }
 
   /// Tells others that the user is typing in [channelId] (at most every 3 seconds).
@@ -216,8 +228,15 @@ class RealtimeController extends Notifier<RealtimeState> {
     final data = json['data'];
 
     try {
-      switch (json['type']) {
+      final type = json['type'];
+      if (type is String && type.startsWith('voice.')) {
+        ref.read(voiceProvider.notifier).handleEvent(type, data);
+        return;
+      }
+      switch (type) {
         case 'ready':
+          // Voice sessions belong to one connection: after a reconnect, rejoin.
+          ref.read(voiceProvider.notifier).onConnected();
           if (data case {'online': List<Object?> list}) {
             final users = [for (final u in list) Author.fromJson(u)];
             _set(state.copyWith(online: {for (final u in users) u.id: u}));

@@ -11,6 +11,11 @@ void registerAppLicense() {
     yield LicenseEntryWithLineBreaks([
       AppConfig.appName,
     ], await rootBundle.loadString('LICENSE'));
+    // The native WebRTC library used for voice is not a Dart package, so Flutter does not
+    // list it by itself.
+    yield LicenseEntryWithLineBreaks([
+      'WebRTC (libwebrtc)',
+    ], await rootBundle.loadString('licenses/webrtc.txt'));
   });
 }
 

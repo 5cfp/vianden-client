@@ -4,6 +4,8 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+#include "audio_ducking.h"
+
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
@@ -25,6 +27,9 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  // Voice: do not let Windows turn other apps down while we use the microphone.
+  OptOutOfDucking();
+  RegisterAudioChannel(flutter_controller_->engine()->messenger());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {

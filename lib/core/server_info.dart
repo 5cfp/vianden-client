@@ -15,6 +15,7 @@ class ServerInfo {
     required this.name,
     required this.version,
     required this.protocolVersion,
+    this.voice = false,
   });
 
   /// Parses the JSON body. Throws [FormatException] if fields are missing or have the wrong type.
@@ -28,6 +29,7 @@ class ServerInfo {
         name: name,
         version: version,
         protocolVersion: protocolVersion,
+        voice: (json as Map)['voice'] == true,
       );
     }
     throw const FormatException('unexpected /info response');
@@ -36,6 +38,9 @@ class ServerInfo {
   final String name;
   final String version;
   final int protocolVersion;
+
+  /// Whether voice channels work on this server (M7).
+  final bool voice;
 }
 
 /// A connection problem, with a message that can be shown to the user as-is.

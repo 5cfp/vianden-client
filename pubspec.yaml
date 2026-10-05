@@ -41,6 +41,7 @@ dependencies:
   clock: ^1.1.3
   crypto: ^3.0.7
   file_selector: ^1.1.0
+  flutter_webrtc: ^1.6.2+hotfix.3
 
 dev_dependencies:
   flutter_test:
@@ -69,6 +70,7 @@ flutter:
   # Our own license, shown on the About & licenses page.
   assets:
     - LICENSE
+    - licenses/webrtc.txt # the native WebRTC library (not a Dart package, so not listed automatically)
 
   # To add assets to your application, add an assets section, like this:
   # assets:
