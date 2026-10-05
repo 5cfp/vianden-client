@@ -8,6 +8,7 @@
 #include <wrl/client.h>
 
 #include <memory>
+#include <string>
 
 using Microsoft::WRL::ComPtr;
 
@@ -58,6 +59,36 @@ int OptOutOfDucking() {
   return updated;
 }
 
+namespace {
+
+// The endpoint ID (e.g. "{0.0.1.00000000}.{...}") of Windows' default device in one
+// direction, as UTF-8; "" if there is none. WebRTC uses the same IDs for its devices.
+std::string DefaultDeviceId(EDataFlow flow) {
+  ComPtr<IMMDeviceEnumerator> enumerator;
+  if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                              IID_PPV_ARGS(&enumerator)))) {
+    return "";
+  }
+  ComPtr<IMMDevice> device;
+  // eConsole = the "Default Device" chosen in Windows' sound settings.
+  if (FAILED(enumerator->GetDefaultAudioEndpoint(flow, eConsole, &device))) {
+    return "";
+  }
+  LPWSTR id = nullptr;
+  if (FAILED(device->GetId(&id)) || id == nullptr) {
+    return "";
+  }
+  int size = WideCharToMultiByte(CP_UTF8, 0, id, -1, nullptr, 0, nullptr, nullptr);
+  std::string utf8(size > 0 ? size - 1 : 0, '\0');
+  if (size > 0) {
+    WideCharToMultiByte(CP_UTF8, 0, id, -1, utf8.data(), size, nullptr, nullptr);
+  }
+  CoTaskMemFree(id);
+  return utf8;
+}
+
+}  // namespace
+
 void RegisterAudioChannel(flutter::BinaryMessenger* messenger) {
   // Kept alive for the life of the app (the window owns the engine).
   static std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel;
@@ -69,6 +100,14 @@ void RegisterAudioChannel(flutter::BinaryMessenger* messenger) {
          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
         if (call.method_name() == "disableDucking") {
           result->Success(flutter::EncodableValue(OptOutOfDucking()));
+        } else if (call.method_name() == "defaultAudioDevices") {
+          // WebRTC's own device list has no "default" entry, so the app asks here.
+          flutter::EncodableMap devices;
+          devices[flutter::EncodableValue("input")] =
+              flutter::EncodableValue(DefaultDeviceId(eCapture));
+          devices[flutter::EncodableValue("output")] =
+              flutter::EncodableValue(DefaultDeviceId(eRender));
+          result->Success(flutter::EncodableValue(devices));
         } else {
           result->NotImplemented();
         }

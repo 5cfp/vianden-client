@@ -13,8 +13,10 @@
 // sessions were updated. COM must be initialized on the calling thread.
 int OptOutOfDucking();
 
-// Lets Dart call OptOutOfDucking again (channel "vianden/audio", method
-// "disableDucking"), e.g. when joining voice after the default device changed.
+// Channel "vianden/audio" for Dart:
+//   "disableDucking"      calls OptOutOfDucking again (e.g. after the device changed).
+//   "defaultAudioDevices" returns {"input": id, "output": id}: Windows' default devices,
+//                         as the IDs WebRTC uses (its own list has no "default" entry).
 void RegisterAudioChannel(flutter::BinaryMessenger* messenger);
 
 #endif  // RUNNER_AUDIO_DUCKING_H_

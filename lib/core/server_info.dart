@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import '../app_config/app_config.dart';
+
 import 'certificate_trust.dart';
 
 /// The API protocol version this client understands (see the server's docs/API.md).
@@ -115,5 +117,27 @@ Future<ServerInfo> fetchServerInfo(
       'This server runs an older version. Ask the server owner to update it.',
     );
   }
+  if (versionMismatch(AppConfig.appVersion, info.version) case final message?) {
+    throw ConnectException(message);
+  }
   return info;
+}
+
+/// The MAJOR number of a version like "0.3.0-alpha.3" (0); null if it is not one
+/// (e.g. "dev" from a developer's own build).
+int? majorVersion(String version) => int.tryParse(
+  RegExp(r'^(\d+)\.\d+\.\d+').firstMatch(version)?.group(1) ?? '',
+);
+
+/// The rule: app and server must have the same MAJOR version. Returns the message to
+/// show if they do not, or null if they match (or a version is unknown).
+String? versionMismatch(String appVersion, String serverVersion) {
+  final app = majorVersion(appVersion);
+  final server = majorVersion(serverVersion);
+  if (app == null || server == null || app == server) return null;
+  final which = server > app
+      ? 'Please update the app.'
+      : 'Ask the server owner to update the server.';
+  return 'Version mismatch: this app is version $appVersion, the server is '
+      'version $serverVersion. $which';
 }

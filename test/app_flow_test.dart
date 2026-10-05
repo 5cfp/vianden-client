@@ -198,6 +198,18 @@ void main() {
       expect(find.byType(ServerProblemScreen), findsOneWidget);
       expect(find.textContaining('newer version of the app'), findsOneWidget);
     });
+
+    testWidgets('a server with another MAJOR version is refused', (
+      tester,
+    ) async {
+      store.server = serverUrl;
+      server.version = '1.0.0';
+      await pumpApp(tester, server, store);
+
+      expect(find.byType(ServerProblemScreen), findsOneWidget);
+      expect(find.textContaining('Version mismatch'), findsOneWidget);
+      expect(find.textContaining('Please update the app'), findsOneWidget);
+    });
   });
 
   group('logged in', () {

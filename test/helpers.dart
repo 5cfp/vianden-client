@@ -14,6 +14,7 @@ import 'package:vianden_client/core/realtime_connection.dart';
 import 'package:vianden_client/core/session_controller.dart';
 import 'package:vianden_client/core/session_store.dart';
 import 'package:vianden_client/features/chat/realtime_controller.dart';
+import 'package:vianden_client/features/voice/audio_settings.dart';
 import 'package:vianden_client/features/voice/system_audio.dart';
 import 'package:vianden_client/features/voice/voice_engine.dart';
 import 'package:vianden_client/main.dart';
@@ -274,6 +275,7 @@ Map<String, Object> _info(FakeUser u) => {
 class FakeServer {
   String name = 'Friends Server';
   int protocolVersion = 1;
+  String version = '0.3.0-alpha.3';
   bool down = false;
   String? rateLimitedFor; // if set: login answers 429 with this Retry-After
   String? sendRateLimitedFor; // if set: sending messages answers 429
@@ -366,6 +368,9 @@ class FakeServer {
 
   /// How often the app asked Windows not to lower other sounds (voice).
   var duckingOptOuts = 0;
+
+  /// The "saved" voice audio settings (instead of the real preferences file).
+  final audioSettings = MemoryAudioSettingsStore();
 
   /// Avatar pictures by key.
   final avatars = <String, List<int>>{};
@@ -578,7 +583,7 @@ class FakeServer {
       case ('GET', '/api/v1/info'):
         return _json(200, {
           'name': name,
-          'version': '0.1.0',
+          'version': version,
           'protocol_version': protocolVersion,
           'voice': voiceAvailable,
         });
@@ -1141,6 +1146,7 @@ Future<void> pumpApp(
         systemAudioProvider.overrideWithValue(
           () async => server.duckingOptOuts++,
         ),
+        audioSettingsStoreProvider.overrideWithValue(server.audioSettings),
         certificateTrustProvider.overrideWithValue(
           server.trust ??= CertificateTrust(),
         ),
@@ -1245,8 +1251,32 @@ class FakeVoiceEngine implements VoiceEngine {
 
   FakeVoicePeer? get last => peers.lastOrNull;
 
+  /// The settings of each connect, for assertions.
+  final connectedWith = <AudioSettings>[];
+
+  /// What this "computer" has: two microphones, two speakers.
+  AudioDevices fakeDevices = const AudioDevices(
+    inputs: [
+      AudioDevice('mic-usb', 'USB Microphone'),
+      AudioDevice('mic-bt', 'Headset (hands-free)'),
+    ],
+    outputs: [
+      AudioDevice('spk-main', 'Speakers'),
+      AudioDevice('spk-bt', 'Headphones'),
+    ],
+    defaultInput: 'mic-usb',
+    defaultOutput: 'spk-main',
+  );
+
   @override
-  Future<VoicePeer> connect({required bool withMic}) async {
+  Future<AudioDevices> devices() async => fakeDevices;
+
+  @override
+  Future<VoicePeer> connect({
+    required bool withMic,
+    AudioSettings settings = const AudioSettings(),
+  }) async {
+    connectedWith.add(settings);
     if (withMic && micFails) throw Exception('no microphone');
     final p = FakeVoicePeer(withMic);
     peers.add(p);
@@ -1287,4 +1317,13 @@ class FakeVoicePeer implements VoicePeer {
   void setOutputEnabled(bool enabled) => outputEnabled = enabled;
   @override
   Future<void> close() async => closed = true;
+}
+
+class MemoryAudioSettingsStore implements AudioSettingsStore {
+  AudioSettings saved = const AudioSettings();
+
+  @override
+  Future<AudioSettings> load() async => saved;
+  @override
+  Future<void> save(AudioSettings settings) async => saved = settings;
 }

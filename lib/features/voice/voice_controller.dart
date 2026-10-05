@@ -7,6 +7,7 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/session_controller.dart';
 import '../chat/realtime_controller.dart';
+import 'audio_settings.dart';
 import 'system_audio.dart';
 import 'voice_engine.dart';
 
@@ -144,6 +145,16 @@ class VoiceController extends Notifier<VoiceState> {
 
   void clearNotice() => state = state.copyWith(notice: () => null);
 
+  /// New audio settings: if we are in voice, rejoin so they take effect (WebRTC cannot
+  /// switch devices inside a running call).
+  void applyAudioSettings() {
+    final id = state.channelId;
+    if (id == null) return;
+    _closePeerSoon();
+    state = state.copyWith(phase: VoicePhase.connecting);
+    _rt.send('voice.join', {'channel_id': id});
+  }
+
   void _setSelf({required bool muted, required bool deafened}) {
     state = state.copyWith(muted: muted, deafened: deafened);
     _peer?.setMicEnabled(!muted);
@@ -239,17 +250,18 @@ class VoiceController extends Notifier<VoiceState> {
 
   Future<void> _connect({required bool withMic}) async {
     final engine = ref.read(voiceEngineProvider);
+    final settings = await ref.read(audioSettingsProvider.future);
     // Before any audio stream opens: Windows must not turn other apps down.
     await ref.read(systemAudioProvider)();
     VoicePeer peer;
     var micOk = true;
     try {
-      peer = await engine.connect(withMic: withMic);
+      peer = await engine.connect(withMic: withMic, settings: settings);
     } on Object {
       if (!withMic) rethrow;
       // No microphone, or no permission (Windows: Settings > Privacy > Microphone).
       micOk = false;
-      peer = await engine.connect(withMic: false);
+      peer = await engine.connect(withMic: false, settings: settings);
     }
     if (!ref.mounted || state.channelId == null) {
       await peer.close();

@@ -8,6 +8,7 @@ import '../../core/permissions.dart';
 import '../../core/session_controller.dart';
 import '../../widgets/user_avatar.dart';
 import '../chat/chat_providers.dart';
+import 'audio_settings_dialog.dart';
 import 'voice_controller.dart';
 
 /// A voice channel in the room list: its name (click to join) and who is in it.
@@ -293,6 +294,12 @@ class VoicePanel extends ConsumerWidget {
             ),
             color: voice.deafened ? theme.colorScheme.error : null,
             onPressed: controller.toggleDeafen,
+          ),
+          IconButton(
+            key: const Key('voice-settings'),
+            tooltip: 'Microphone and speaker',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => showAudioSettingsDialog(context),
           ),
           IconButton(
             key: const Key('voice-leave'),

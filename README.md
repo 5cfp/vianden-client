@@ -36,7 +36,7 @@ Runs the tests, builds the release, and writes `dist\vianden-client_<version>_wi
 For servers without a domain, the app shows the certificate's fingerprint once; compare it with the one the server owner gives you. The app remembers it and warns if it ever changes.
 
 ## Voice channels
-Click a voice channel to join it. Voice uses WebRTC (`flutter_webrtc`); the first Windows build downloads Google's WebRTC library (`libwebrtc.dll`) automatically. On Windows, allow microphone access for desktop apps (**Settings → Privacy & security → Microphone → Let desktop apps access your microphone**); without a microphone the app joins as a listener. Echo cancellation and noise suppression are on.
+Click a voice channel to join it. Voice uses WebRTC (`flutter_webrtc`); the first Windows build downloads Google's WebRTC library (`libwebrtc.dll`) automatically. On Windows, allow microphone access for desktop apps (**Settings → Privacy & security → Microphone → Let desktop apps access your microphone**); without a microphone the app joins as a listener. Echo cancellation and noise suppression are on. Choose the microphone and speaker, and switch echo cancellation, noise suppression and automatic volume, in **account menu → Voice & audio** (or the gear in the voice panel); saved on this computer. "Windows default" is asked from Windows itself (`windows/runner/audio_ducking.cpp`): flutter_webrtc would otherwise take the first device in its list.
 
 Windows normally treats voice apps like a phone call and turns all other sounds down by 80% ("communications activity"). The app opts out of that (`windows/runner/audio_ducking.cpp`, Microsoft's documented `SetDuckingPreference`), so music and games keep their volume while you are in voice.
 

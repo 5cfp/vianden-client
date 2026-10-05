@@ -13,6 +13,7 @@ import '../../widgets/user_avatar.dart';
 import 'dialogs.dart';
 import 'members_dialog.dart';
 import 'profile_dialog.dart';
+import '../voice/audio_settings_dialog.dart';
 import '../voice/voice_widgets.dart';
 import 'realtime_controller.dart';
 import 'time_format.dart';
@@ -381,6 +382,8 @@ class _AccountBar extends ConsumerWidget {
                   );
                 case 'profile':
                   showProfileDialog(context);
+                case 'audio':
+                  showAudioSettingsDialog(context);
                 case 'members':
                   showMembersDialog(context, user);
                 case 'server':
@@ -399,6 +402,7 @@ class _AccountBar extends ConsumerWidget {
                 ),
               const PopupMenuItem(value: 'profile', child: Text('Profile')),
               const PopupMenuItem(value: 'members', child: Text('Members')),
+              const PopupMenuItem(value: 'audio', child: Text('Voice & audio')),
               const PopupMenuItem(
                 value: 'server',
                 child: Text('Change server'),

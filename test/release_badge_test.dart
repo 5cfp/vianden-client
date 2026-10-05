@@ -21,8 +21,8 @@ void main() {
 
   test('the release stage comes from the version suffix', () {
     expect(AppConfig.appVersion.contains('-'), AppConfig.releaseStage != null);
-    if (AppConfig.appVersion == '0.1.0-alpha') {
-      expect(AppConfig.releaseStage, 'ALPHA');
+    if (AppConfig.appVersion == '0.3.0-alpha.3') {
+      expect(AppConfig.releaseStage, 'ALPHA 3');
     }
   });
 
